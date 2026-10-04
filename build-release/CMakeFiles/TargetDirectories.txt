@@ -1,0 +1,3 @@
+C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/build-release/CMakeFiles/Modeler3D.dir
+C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/build-release/CMakeFiles/edit_cache.dir
+C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/build-release/CMakeFiles/rebuild_cache.dir

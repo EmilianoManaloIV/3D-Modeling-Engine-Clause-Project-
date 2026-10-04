@@ -1,0 +1,93 @@
+// Modeler3D - a small, dependency-free 3D modeling program (C++17 / OpenGL 3.3).
+//
+// Startup / shutdown order and the main loop follow GEA Vol. I sec. 6.1 and
+// ch. 8: bring up the platform layer, then the graphics API, then the editor;
+// each frame pumps OS events, updates, renders and swaps; tear down in reverse.
+//
+// Usage: Modeler3D [scene.m3d | model.obj]
+// Testing flags: --demo <1|2>   build a sample scene
+//                --screenshot <file.png>   render a few frames, save, exit
+#include "editor.h"
+#include "gl.h"
+#include "image_io.h"
+#include "platform.h"
+
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+int main(int argc, char** argv) {
+    AppOptions options;
+    std::string screenshotPath;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--screenshot" && i + 1 < argc) screenshotPath = argv[++i];
+        else if (a == "--demo" && i + 1 < argc) options.demo = std::atoi(argv[++i]);
+        else if (a == "--help-overlay") options.showHelp = true;
+        else if (!a.empty() && a[0] != '-') options.openPath = a;
+    }
+
+    std::string error;
+    if (!platform::init("Modeler3D", 1360, 860, error)) {
+        platform::showError(error);
+        return 1;
+    }
+    std::string missing;
+    if (!gl::load(missing)) {
+        platform::showError("Required OpenGL functions are missing:\n" + missing);
+        platform::shutdown();
+        return 1;
+    }
+
+    Editor editor;
+    if (!editor.init(options, error)) {
+        platform::showError(error);
+        platform::shutdown();
+        return 1;
+    }
+
+    Input input;
+    auto last = std::chrono::steady_clock::now();
+    int frameCount = 0;
+    while (!editor.shouldExit()) {
+        platform::processEvents(input);
+        if (platform::quitRequested()) {
+            platform::clearQuitRequest();
+            editor.requestQuit();
+        }
+        auto now = std::chrono::steady_clock::now();
+        float dt = std::chrono::duration<float>(now - last).count();
+        last = now;
+
+        int w = 0, h = 0;
+        platform::getFramebufferSize(w, h);
+        if (w <= 0 || h <= 0) {  // minimized
+            platform::sleepMs(30);
+            continue;
+        }
+        editor.frame(input, w, h, dt);
+
+        if (!screenshotPath.empty() && ++frameCount == 6) {
+            std::vector<uint8_t> pixels;
+            editor.readPixels(w, h, pixels);
+            int rc = writePNG(screenshotPath, w, h, pixels) ? 0 : 2;
+            editor.shutdown();
+            platform::shutdown();
+            return rc;
+        }
+        platform::swapBuffers();
+
+        // Frame cap for systems where vsync is unavailable, so an idle editor
+        // doesn't spin a CPU core at hundreds of frames per second.
+        const float minFrame = 1.0f / 144.0f;
+        float spent = std::chrono::duration<float>(std::chrono::steady_clock::now() - now).count();
+        if (spent < minFrame) platform::sleepMs((int)((minFrame - spent) * 1000.0f) + 1);
+    }
+
+    editor.shutdown();
+    platform::shutdown();
+    return 0;
+}

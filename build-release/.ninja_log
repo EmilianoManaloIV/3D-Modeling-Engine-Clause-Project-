@@ -1,0 +1,12 @@
+# ninja log v6
+72	1002	8128587812073806	CMakeFiles/Modeler3D.dir/src/font.cpp.obj	87fb9dc2e5845c14
+96	1175	8128587812319327	CMakeFiles/Modeler3D.dir/src/gl.cpp.obj	4c94b32330c43ffd
+108	1450	8128587812432948	CMakeFiles/Modeler3D.dir/src/image_io.cpp.obj	73a8397014c7d4
+56	2280	8128587811911276	CMakeFiles/Modeler3D.dir/src/ui.cpp.obj	bfc3650cd995a130
+27	2284	8128587811624471	CMakeFiles/Modeler3D.dir/src/main.cpp.obj	dae6ce3b9b71400
+46	2545	8128587811814895	CMakeFiles/Modeler3D.dir/src/renderer.cpp.obj	4320e28fe06a7bd2
+125	2930	8128587812612785	CMakeFiles/Modeler3D.dir/src/platform_win32.cpp.obj	9f2e479caad2c922
+145	3513	8128587812809693	CMakeFiles/Modeler3D.dir/src/mesh.cpp.obj	70ba003e3e531044
+160	3577	8128587812961704	CMakeFiles/Modeler3D.dir/src/scene.cpp.obj	35c4c6528d9c1c
+36	4640	8128587811724686	CMakeFiles/Modeler3D.dir/src/editor.cpp.obj	5e2fb3afc26c7fb3
+4640	5168	8128587857761027	Modeler3D.exe	de2e11bc97660f9a
