@@ -14,11 +14,18 @@ option(MODELER_BUILD_TESTS "Build the unit tests (modeler_tests)" OFF)
 # Geometry / file code with no OpenGL or OS dependency (shared with the tests).
 set(CORE_SOURCES
     src/mesh.cpp
-    src/scene.cpp)
+    src/uv.cpp
+    src/parametric.cpp
+    src/scene.cpp
+    src/skin.cpp
+    src/particles.cpp)
 
 set(APP_SOURCES
     src/main.cpp
     src/editor.cpp
+    src/editor_actions.cpp
+    src/editor_ui.cpp
+    src/editor_render.cpp
     src/renderer.cpp
     src/ui.cpp
     src/font.cpp

@@ -19,10 +19,13 @@ struct Vec2 {
     float x = 0, y = 0;
     Vec2() = default;
     Vec2(float x_, float y_) : x(x_), y(y_) {}
+    Vec2& operator+=(Vec2 b) { x += b.x; y += b.y; return *this; }
+    Vec2& operator-=(Vec2 b) { x -= b.x; y -= b.y; return *this; }
 };
 inline Vec2 operator+(Vec2 a, Vec2 b) { return {a.x + b.x, a.y + b.y}; }
 inline Vec2 operator-(Vec2 a, Vec2 b) { return {a.x - b.x, a.y - b.y}; }
 inline Vec2 operator*(Vec2 a, float s) { return {a.x * s, a.y * s}; }
+inline Vec2 operator/(Vec2 a, float s) { return {a.x / s, a.y / s}; }
 inline float dot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }
 inline float length(Vec2 a) { return std::sqrt(dot(a, a)); }
 
@@ -55,6 +58,7 @@ inline Vec3 normalize(Vec3 a) {
 }
 inline Vec3 vmin(Vec3 a, Vec3 b) { return {std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z)}; }
 inline Vec3 vmax(Vec3 a, Vec3 b) { return {std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z)}; }
+inline Vec3 lerp(Vec3 a, Vec3 b, float t) { return a + (b - a) * t; }
 
 // ---------------------------------------------------------------------------
 struct Vec4 {
@@ -227,4 +231,21 @@ inline Mat4 inverse(const Mat4& mat) {
     float invDet = 1.0f / det;
     for (int i = 0; i < 16; ++i) r.m[i] = inv[i] * invDet;
     return r;
+}
+
+// Splits an affine matrix into translation, Euler rotation (degrees) and
+// scale. Shear (from non-uniform parent scale) cannot be represented and is
+// approximated - the usual trade-off for TRS hierarchies (GEA Vol. I sec. 5.3).
+inline void decomposeTRS(const Mat4& m, Vec3& pos, Vec3& rotDeg, Vec3& scl) {
+    pos = {m(0, 3), m(1, 3), m(2, 3)};
+    Vec3 c0{m(0, 0), m(1, 0), m(2, 0)}, c1{m(0, 1), m(1, 1), m(2, 1)}, c2{m(0, 2), m(1, 2), m(2, 2)};
+    scl = {length(c0), length(c1), length(c2)};
+    if (dot(cross(c0, c1), c2) < 0) scl.x = -scl.x;
+    Mat4 r;
+    for (int i = 0; i < 3; ++i) {
+        r(i, 0) = std::fabs(scl.x) > 1e-12f ? c0[i] / scl.x : (i == 0 ? 1.0f : 0.0f);
+        r(i, 1) = std::fabs(scl.y) > 1e-12f ? c1[i] / scl.y : (i == 1 ? 1.0f : 0.0f);
+        r(i, 2) = std::fabs(scl.z) > 1e-12f ? c2[i] / scl.z : (i == 2 ? 1.0f : 0.0f);
+    }
+    rotDeg = matrixToEuler(r);
 }

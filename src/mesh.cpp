@@ -1,6 +1,8 @@
 #include "mesh.h"
 
 #include <algorithm>
+#include <map>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -28,8 +30,84 @@ bool rayTriangle(Vec3 o, Vec3 d, Vec3 a, Vec3 b, Vec3 c, float& t) {
     t = dot(e2, q) * inv;
     return t > 1e-6f;
 }
+
+// Weighted blend of several weight sets (used by subdivision).
+BoneWeights blendWeights(const std::vector<std::pair<const BoneWeights*, float>>& in) {
+    int bones[16];
+    float sums[16];
+    int n = 0;
+    for (const auto& item : in)
+        for (int k = 0; k < 4; ++k) {
+            int b = item.first->bone[k];
+            if (b < 0) continue;
+            float w = item.first->w[k] * item.second;
+            int j = 0;
+            while (j < n && bones[j] != b) ++j;
+            if (j == n) {
+                if (n == 16) continue;
+                bones[n] = b;
+                sums[n++] = 0;
+            }
+            sums[j] += w;
+        }
+    BoneWeights r;
+    for (int j = 0; j < n; ++j) r.add(bones[j], sums[j]);
+    r.normalize();
+    return r;
+}
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// BoneWeights
+// ---------------------------------------------------------------------------
+void BoneWeights::add(int b, float weight) {
+    if (b < 0 || weight <= 0.0f) return;
+    for (int k = 0; k < 4; ++k)
+        if (bone[k] == b) {
+            w[k] += weight;
+            return;
+        }
+    int slot = -1;
+    for (int k = 0; k < 4 && slot < 0; ++k)
+        if (bone[k] < 0) slot = k;
+    if (slot < 0) {  // full: replace the weakest influence if the new one is stronger
+        slot = 0;
+        for (int k = 1; k < 4; ++k)
+            if (w[k] < w[slot]) slot = k;
+        if (w[slot] >= weight) return;
+    }
+    bone[slot] = b;
+    w[slot] = weight;
+}
+
+void BoneWeights::set(int b, float weight) {
+    remove(b);
+    if (weight > 0.0f) add(b, weight);
+}
+
+void BoneWeights::remove(int b) {
+    for (int k = 0; k < 4; ++k)
+        if (bone[k] == b) {
+            bone[k] = -1;
+            w[k] = 0;
+        }
+}
+
+void BoneWeights::normalize() {
+    float t = total();
+    if (t <= 1e-8f) return;
+    for (int k = 0; k < 4; ++k) w[k] = bone[k] >= 0 ? w[k] / t : 0.0f;
+}
+
+float BoneWeights::weightOf(int b) const {
+    for (int k = 0; k < 4; ++k)
+        if (bone[k] == b) return w[k];
+    return 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// Mesh basics
+// ---------------------------------------------------------------------------
 void Mesh::touch() { version = ++g_versionCounter; }
 
 size_t Mesh::triangleCount() const {
@@ -39,18 +117,29 @@ size_t Mesh::triangleCount() const {
     return n;
 }
 
-Vec3 faceNormalRaw(const Mesh& m, const std::vector<int>& f) {
+void Mesh::validate() {
+    if (!uvs.empty()) {
+        bool ok = uvs.size() == faces.size();
+        for (size_t f = 0; ok && f < faces.size(); ++f) ok = uvs[f].size() == faces[f].size();
+        if (!ok) uvs.clear();
+    }
+    if (!weights.empty() && weights.size() != verts.size()) weights.clear();
+}
+
+Vec3 faceNormalRaw(const std::vector<Vec3>& p, const std::vector<int>& f) {
     Vec3 n;
     const size_t count = f.size();
     for (size_t i = 0; i < count; ++i) {
-        const Vec3& a = m.verts[f[i]];
-        const Vec3& b = m.verts[f[(i + 1) % count]];
+        const Vec3& a = p[f[i]];
+        const Vec3& b = p[f[(i + 1) % count]];
         n.x += (a.y - b.y) * (a.z + b.z);
         n.y += (a.z - b.z) * (a.x + b.x);
         n.z += (a.x - b.x) * (a.y + b.y);
     }
     return n;
 }
+
+Vec3 faceNormalRaw(const Mesh& m, const std::vector<int>& f) { return faceNormalRaw(m.verts, f); }
 
 Vec3 faceCenter(const Mesh& m, const std::vector<int>& f) {
     Vec3 c;
@@ -63,35 +152,58 @@ Vec3 faceCenter(const Mesh& m, const std::vector<int>& f) {
 // ---------------------------------------------------------------------------
 namespace primitives {
 
-Mesh cube(float size) {
-    float h = size * 0.5f;
+Mesh box(float w, float h, float d, int n) {
+    n = std::max(1, n);
+    const float hx = w * 0.5f, hy = h * 0.5f, hz = d * 0.5f;
+    struct Side {
+        Vec3 o, u, v;  // origin corner and spanning edges; u x v points outward
+    };
+    const Side sides[6] = {
+        {{-hx, -hy, hz}, {w, 0, 0}, {0, h, 0}},    // +Z
+        {{hx, -hy, -hz}, {-w, 0, 0}, {0, h, 0}},   // -Z
+        {{hx, -hy, hz}, {0, 0, -d}, {0, h, 0}},    // +X
+        {{-hx, -hy, -hz}, {0, 0, d}, {0, h, 0}},   // -X
+        {{-hx, hy, hz}, {w, 0, 0}, {0, 0, -d}},    // +Y
+        {{-hx, -hy, -hz}, {w, 0, 0}, {0, 0, d}},   // -Y
+    };
     Mesh m;
-    m.verts = {{-h, -h, -h}, {h, -h, -h}, {h, h, -h}, {-h, h, -h},
-               {-h, -h, h},  {h, -h, h},  {h, h, h},  {-h, h, h}};
-    m.faces = {{4, 5, 6, 7},   // +Z
-               {1, 0, 3, 2},   // -Z
-               {5, 1, 2, 6},   // +X
-               {0, 4, 7, 3},   // -X
-               {7, 6, 2, 3},   // +Y
-               {0, 1, 5, 4}};  // -Y
+    for (const Side& s : sides) {
+        int base = (int)m.verts.size();
+        for (int j = 0; j <= n; ++j)
+            for (int i = 0; i <= n; ++i) m.verts.push_back(s.o + s.u * (float(i) / n) + s.v * (float(j) / n));
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                auto idx = [&](int a, int b) { return base + b * (n + 1) + a; };
+                m.faces.push_back({idx(i, j), idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)});
+                float u0 = float(i) / n, u1 = float(i + 1) / n, v0 = float(j) / n, v1 = float(j + 1) / n;
+                m.uvs.push_back({{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}});
+            }
+    }
+    weldVertices(m, 1e-5f * std::max(w, std::max(h, d)));
     m.touch();
     return m;
 }
 
-Mesh plane(float size, int n) {
-    n = std::max(1, n);
-    float h = size * 0.5f;
+Mesh cube(float size) { return box(size, size, size, 1); }
+
+Mesh grid(float w, float d, int sx, int sz) {
+    sx = std::max(1, sx);
+    sz = std::max(1, sz);
     Mesh m;
-    for (int j = 0; j <= n; ++j)
-        for (int i = 0; i <= n; ++i)
-            m.verts.push_back({-h + size * i / n, 0.0f, -h + size * j / n});
-    auto idx = [n](int i, int j) { return j * (n + 1) + i; };
-    for (int j = 0; j < n; ++j)
-        for (int i = 0; i < n; ++i)
-            m.faces.push_back({idx(i, j + 1), idx(i + 1, j + 1), idx(i + 1, j), idx(i, j)});
+    for (int j = 0; j <= sz; ++j)
+        for (int i = 0; i <= sx; ++i) m.verts.push_back({-w * 0.5f + w * i / sx, 0.0f, d * 0.5f - d * j / sz});
+    auto idx = [sx](int i, int j) { return j * (sx + 1) + i; };
+    for (int j = 0; j < sz; ++j)
+        for (int i = 0; i < sx; ++i) {
+            m.faces.push_back({idx(i, j), idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)});
+            float u0 = float(i) / sx, u1 = float(i + 1) / sx, v0 = float(j) / sz, v1 = float(j + 1) / sz;
+            m.uvs.push_back({{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}});
+        }
     m.touch();
     return m;
 }
+
+Mesh plane(float size, int n) { return grid(size, size, n, n); }
 
 Mesh uvSphere(float r, int segments, int rings) {
     segments = std::max(3, segments);
@@ -109,56 +221,80 @@ Mesh uvSphere(float r, int segments, int rings) {
     const int south = (int)m.verts.size();
     m.verts.push_back({0, -r, 0});
     auto ring = [segments](int k, int s) { return 1 + (k - 1) * segments + (s % segments); };
-    for (int s = 0; s < segments; ++s) m.faces.push_back({0, ring(1, s), ring(1, s + 1)});
+    auto uv = [segments, rings](int k, float s) { return Vec2(s / segments, 1.0f - float(k) / rings); };
+    for (int s = 0; s < segments; ++s) {
+        m.faces.push_back({0, ring(1, s), ring(1, s + 1)});
+        m.uvs.push_back({uv(0, s + 0.5f), uv(1, (float)s), uv(1, s + 1.0f)});
+    }
     for (int k = 1; k < rings - 1; ++k)
-        for (int s = 0; s < segments; ++s)
+        for (int s = 0; s < segments; ++s) {
             m.faces.push_back({ring(k, s), ring(k + 1, s), ring(k + 1, s + 1), ring(k, s + 1)});
-    for (int s = 0; s < segments; ++s) m.faces.push_back({ring(rings - 1, s), south, ring(rings - 1, s + 1)});
+            m.uvs.push_back({uv(k, (float)s), uv(k + 1, (float)s), uv(k + 1, s + 1.0f), uv(k, s + 1.0f)});
+        }
+    for (int s = 0; s < segments; ++s) {
+        m.faces.push_back({ring(rings - 1, s), south, ring(rings - 1, s + 1)});
+        m.uvs.push_back({uv(rings - 1, (float)s), uv(rings, s + 0.5f), uv(rings - 1, s + 1.0f)});
+    }
     m.touch();
     return m;
 }
 
-Mesh cylinder(float r, float height, int segments) {
+Mesh frustum(float rb, float rt, float height, int segments) {
     segments = std::max(3, segments);
-    float h = height * 0.5f;
+    const float h = height * 0.5f;
+    const bool apex = rt <= 1e-6f;
     Mesh m;
     for (int s = 0; s < segments; ++s) {
         float t = 2.0f * kPi * s / segments;
-        m.verts.push_back({r * std::sin(t), -h, r * std::cos(t)});
+        m.verts.push_back({rb * std::sin(t), -h, rb * std::cos(t)});
     }
-    for (int s = 0; s < segments; ++s) {
-        float t = 2.0f * kPi * s / segments;
-        m.verts.push_back({r * std::sin(t), h, r * std::cos(t)});
+    int top = (int)m.verts.size();
+    if (apex) {
+        m.verts.push_back({0, h, 0});
+    } else {
+        for (int s = 0; s < segments; ++s) {
+            float t = 2.0f * kPi * s / segments;
+            m.verts.push_back({rt * std::sin(t), h, rt * std::cos(t)});
+        }
     }
     for (int s = 0; s < segments; ++s) {
         int s1 = (s + 1) % segments;
-        m.faces.push_back({segments + s, s, s1, segments + s1});
+        float u0 = float(s) / segments, u1 = float(s + 1) / segments;
+        if (apex) {
+            m.faces.push_back({top, s, s1});
+            m.uvs.push_back({{(u0 + u1) * 0.5f, 1}, {u0, 0}, {u1, 0}});
+        } else {
+            m.faces.push_back({top + s, s, s1, top + s1});
+            m.uvs.push_back({{u0, 1}, {u0, 0}, {u1, 0}, {u1, 1}});
+        }
     }
-    std::vector<int> top, bottom;
-    for (int s = 0; s < segments; ++s) top.push_back(segments + s);
-    for (int s = segments - 1; s >= 0; --s) bottom.push_back(s);
-    m.faces.push_back(top);
+    auto capUV = [](Vec3 p, float r, float flip) {
+        return Vec2(0.5f + p.x / (2 * r), 0.5f + flip * p.z / (2 * r));
+    };
+    if (!apex) {
+        std::vector<int> cap;
+        std::vector<Vec2> capUVs;
+        for (int s = 0; s < segments; ++s) {
+            cap.push_back(top + s);
+            capUVs.push_back(capUV(m.verts[top + s], rt, -1.0f));
+        }
+        m.faces.push_back(cap);
+        m.uvs.push_back(capUVs);
+    }
+    std::vector<int> bottom;
+    std::vector<Vec2> bottomUVs;
+    for (int s = segments - 1; s >= 0; --s) {
+        bottom.push_back(s);
+        bottomUVs.push_back(capUV(m.verts[s], rb, 1.0f));
+    }
     m.faces.push_back(bottom);
+    m.uvs.push_back(bottomUVs);
     m.touch();
     return m;
 }
 
-Mesh cone(float r, float height, int segments) {
-    segments = std::max(3, segments);
-    float h = height * 0.5f;
-    Mesh m;
-    m.verts.push_back({0, h, 0});  // apex
-    for (int s = 0; s < segments; ++s) {
-        float t = 2.0f * kPi * s / segments;
-        m.verts.push_back({r * std::sin(t), -h, r * std::cos(t)});
-    }
-    for (int s = 0; s < segments; ++s) m.faces.push_back({0, 1 + s, 1 + (s + 1) % segments});
-    std::vector<int> base;
-    for (int s = segments - 1; s >= 0; --s) base.push_back(1 + s);
-    m.faces.push_back(base);
-    m.touch();
-    return m;
-}
+Mesh cylinder(float r, float height, int segments) { return frustum(r, r, height, segments); }
+Mesh cone(float r, float height, int segments) { return frustum(r, 0.0f, height, segments); }
 
 Mesh torus(float R, float r, int segU, int segV) {
     segU = std::max(3, segU);
@@ -174,8 +310,11 @@ Mesh torus(float R, float r, int segU, int segV) {
     }
     auto idx = [segU, segV](int u, int v) { return (u % segU) * segV + (v % segV); };
     for (int u = 0; u < segU; ++u)
-        for (int v = 0; v < segV; ++v)
+        for (int v = 0; v < segV; ++v) {
             m.faces.push_back({idx(u, v), idx(u + 1, v), idx(u + 1, v + 1), idx(u, v + 1)});
+            float u0 = float(u) / segU, u1 = float(u + 1) / segU, v0 = float(v) / segV, v1 = float(v + 1) / segV;
+            m.uvs.push_back({{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}});
+        }
     m.touch();
     return m;
 }
@@ -188,6 +327,7 @@ Mesh torus(float R, float r, int segU, int segV) {
 Mesh catmullClark(const Mesh& in) {
     const int V = (int)in.verts.size();
     const int F = (int)in.faces.size();
+    const bool uvs = in.hasUVs(), weights = in.hasWeights();
 
     struct Edge {
         int a, b;
@@ -271,14 +411,35 @@ Mesh catmullClark(const Mesh& in) {
     for (int i = 0; i < E; ++i) out.verts[V + i] = edgePts[i];
     for (int f = 0; f < F; ++f) out.verts[V + E + f] = facePts[f];
 
+    if (weights) {
+        out.weights.resize(out.verts.size());
+        for (int v = 0; v < V; ++v) out.weights[v] = in.weights[v];
+        for (int i = 0; i < E; ++i)
+            out.weights[V + i] = blendWeights({{&in.weights[edges[i].a], 0.5f}, {&in.weights[edges[i].b], 0.5f}});
+        for (int f = 0; f < F; ++f) {
+            std::vector<std::pair<const BoneWeights*, float>> parts;
+            for (int v : in.faces[f]) parts.push_back({&in.weights[v], 1.0f / in.faces[f].size()});
+            if (!parts.empty()) out.weights[V + E + f] = blendWeights(parts);
+        }
+    }
+
     for (int f = 0; f < F; ++f) {
         const auto& face = in.faces[f];
         const int n = (int)face.size();
         if (n < 3) continue;
+        Vec2 uvCenter;
+        if (uvs) {
+            for (const Vec2& t : in.uvs[f]) uvCenter += t;
+            uvCenter = uvCenter / float(n);
+        }
         for (int i = 0; i < n; ++i) {
             int eNext = faceEdges[f][i];
             int ePrev = faceEdges[f][(i + n - 1) % n];
             out.faces.push_back({face[i], V + eNext, V + E + f, V + ePrev});
+            if (uvs) {
+                const Vec2 a = in.uvs[f][i], next = in.uvs[f][(i + 1) % n], prev = in.uvs[f][(i + n - 1) % n];
+                out.uvs.push_back({a, (a + next) * 0.5f, uvCenter, (a + prev) * 0.5f});
+            }
         }
     }
     removeUnusedVertices(out);
@@ -288,22 +449,51 @@ Mesh catmullClark(const Mesh& in) {
 
 void flipNormals(Mesh& m) {
     for (auto& f : m.faces) std::reverse(f.begin(), f.end());
+    for (auto& u : m.uvs) std::reverse(u.begin(), u.end());
     m.touch();
+}
+
+void weldVertices(Mesh& m, float eps) {
+    const float inv = 1.0f / std::max(eps, 1e-12f);
+    std::map<std::tuple<long long, long long, long long>, int> cells;
+    std::vector<int> remap(m.verts.size());
+    std::vector<Vec3> kept;
+    std::vector<BoneWeights> keptW;
+    for (size_t i = 0; i < m.verts.size(); ++i) {
+        const Vec3& p = m.verts[i];
+        auto key = std::make_tuple((long long)std::llround(p.x * inv), (long long)std::llround(p.y * inv),
+                                   (long long)std::llround(p.z * inv));
+        auto it = cells.find(key);
+        if (it == cells.end()) {
+            it = cells.emplace(key, (int)kept.size()).first;
+            kept.push_back(p);
+            if (m.hasWeights()) keptW.push_back(m.weights[i]);
+        }
+        remap[i] = it->second;
+    }
+    m.verts.swap(kept);
+    if (!keptW.empty()) m.weights.swap(keptW);
+    for (auto& f : m.faces)
+        for (int& v : f) v = remap[v];
 }
 
 std::vector<int> removeUnusedVertices(Mesh& m) {
     std::vector<char> used(m.verts.size(), 0);
     for (const auto& f : m.faces)
         for (int v : f) used[v] = 1;
+    const bool w = m.hasWeights();
     std::vector<int> remap(m.verts.size(), -1);
     std::vector<Vec3> kept;
+    std::vector<BoneWeights> keptW;
     kept.reserve(m.verts.size());
     for (size_t i = 0; i < m.verts.size(); ++i)
         if (used[i]) {
             remap[i] = (int)kept.size();
             kept.push_back(m.verts[i]);
+            if (w) keptW.push_back(m.weights[i]);
         }
     m.verts.swap(kept);
+    if (w) m.weights.swap(keptW);
     for (auto& f : m.faces)
         for (int& v : f) v = remap[v];
     return remap;
@@ -311,31 +501,44 @@ std::vector<int> removeUnusedVertices(Mesh& m) {
 
 void deleteVertices(Mesh& m, std::vector<char>& sel) {
     sel.resize(m.verts.size(), 0);
+    const bool uvs = m.hasUVs();
     std::vector<std::vector<int>> keptFaces;
-    for (auto& f : m.faces) {
+    std::vector<std::vector<Vec2>> keptUVs;
+    for (size_t f = 0; f < m.faces.size(); ++f) {
         bool touches = false;
-        for (int v : f)
+        for (int v : m.faces[f])
             if (sel[v]) { touches = true; break; }
-        if (!touches) keptFaces.push_back(std::move(f));
+        if (touches) continue;
+        keptFaces.push_back(std::move(m.faces[f]));
+        if (uvs) keptUVs.push_back(std::move(m.uvs[f]));
     }
     m.faces.swap(keptFaces);
+    m.uvs.swap(keptUVs);
     removeUnusedVertices(m);
     sel.assign(m.verts.size(), 0);
+    m.validate();
     m.touch();
 }
 
-bool extrudeSelectedFaces(Mesh& m, std::vector<char>& sel, Vec3* outNormal) {
-    sel.resize(m.verts.size(), 0);
-    std::vector<int> region;
+std::vector<int> selectedFaces(const Mesh& m, const std::vector<char>& sel) {
+    std::vector<int> out;
+    if (sel.size() != m.verts.size()) return out;
     for (int f = 0; f < (int)m.faces.size(); ++f) {
         const auto& face = m.faces[f];
         if (face.size() < 3) continue;
         bool all = true;
         for (int v : face)
             if (!sel[v]) { all = false; break; }
-        if (all) region.push_back(f);
+        if (all) out.push_back(f);
     }
+    return out;
+}
+
+bool extrudeSelectedFaces(Mesh& m, std::vector<char>& sel, Vec3* outNormal) {
+    sel.resize(m.verts.size(), 0);
+    std::vector<int> region = selectedFaces(m, sel);
     if (region.empty()) return false;
+    const bool uvs = m.hasUVs(), weights = m.hasWeights();
 
     // Directed edges inside the region; an edge is on the region boundary when
     // its reverse is not also part of the region.
@@ -353,22 +556,39 @@ bool extrudeSelectedFaces(Mesh& m, std::vector<char>& sel, Vec3* outNormal) {
         int n = (int)m.verts.size();
         Vec3 p = m.verts[v];
         m.verts.push_back(p);
+        if (weights) {
+            BoneWeights w = m.weights[v];
+            m.weights.push_back(w);
+        }
         dup[v] = n;
         return n;
     };
 
     std::vector<std::vector<int>> sideFaces;
+    std::vector<std::vector<Vec2>> sideUVs;
     for (int f : region) {
         normal += faceNormalRaw(m, m.faces[f]);
         const auto face = m.faces[f];  // copy: m.verts may grow below
         for (size_t i = 0; i < face.size(); ++i) {
-            int a = face[i], b = face[(i + 1) % face.size()];
-            if (!directed.count(directedKey(b, a))) sideFaces.push_back({a, b, copyOf(b), copyOf(a)});
+            size_t j = (i + 1) % face.size();
+            int a = face[i], b = face[j];
+            if (directed.count(directedKey(b, a))) continue;
+            sideFaces.push_back({a, b, copyOf(b), copyOf(a)});
+            if (uvs) {
+                Vec2 ua = m.uvs[f][i], ub = m.uvs[f][j];
+                // Give the wall a strip of UV space next to its edge.
+                Vec2 e = ub - ua;
+                Vec2 off(-e.y * 0.25f, e.x * 0.25f);
+                sideUVs.push_back({ua, ub, ub + off, ua + off});
+            }
         }
     }
     for (int f : region)
         for (int& v : m.faces[f]) v = copyOf(v);
-    for (auto& sf : sideFaces) m.faces.push_back(std::move(sf));
+    for (size_t i = 0; i < sideFaces.size(); ++i) {
+        m.faces.push_back(std::move(sideFaces[i]));
+        if (uvs) m.uvs.push_back(std::move(sideUVs[i]));
+    }
 
     sel.assign(m.verts.size(), 0);
     for (const auto& kv : dup) sel[kv.second] = 1;
@@ -380,6 +600,7 @@ bool extrudeSelectedFaces(Mesh& m, std::vector<char>& sel, Vec3* outNormal) {
     sel.swap(newSel);
 
     if (outNormal) *outNormal = normalize(normal);
+    m.validate();
     m.touch();
     return true;
 }
@@ -395,15 +616,15 @@ std::vector<std::pair<int, int>> uniqueEdges(const Mesh& m) {
     return out;
 }
 
-bool raycastMesh(const Mesh& m, Vec3 o, Vec3 d, float& tHit) {
+bool raycastMesh(const Mesh& m, const std::vector<Vec3>& p, Vec3 o, Vec3 d, float& tHit) {
     bool hit = false;
     float best = 1e30f;
     for (const auto& f : m.faces) {
         if (f.size() < 3) continue;
-        const Vec3& a = m.verts[f[0]];
+        const Vec3& a = p[f[0]];
         for (size_t i = 1; i + 1 < f.size(); ++i) {
             float t;
-            if (rayTriangle(o, d, a, m.verts[f[i]], m.verts[f[i + 1]], t) && t < best) {
+            if (rayTriangle(o, d, a, p[f[i]], p[f[i + 1]], t) && t < best) {
                 best = t;
                 hit = true;
             }
@@ -413,20 +634,24 @@ bool raycastMesh(const Mesh& m, Vec3 o, Vec3 d, float& tHit) {
     return hit;
 }
 
-void buildRenderData(const Mesh& m, bool smooth, float smoothAngleDeg, std::vector<RenderVertex>& out) {
+bool raycastMesh(const Mesh& m, Vec3 o, Vec3 d, float& tHit) { return raycastMesh(m, m.verts, o, d, tHit); }
+
+void buildRenderData(const Mesh& m, const std::vector<Vec3>& p, bool smooth, float smoothAngleDeg, int weightSlot,
+                     std::vector<RenderVertex>& out) {
     out.clear();
     out.reserve(m.triangleCount() * 3);
     const size_t F = m.faces.size();
+    const bool uvs = m.hasUVs(), weights = weightSlot >= 0 && m.hasWeights();
     std::vector<Vec3> rawN(F), unitN(F);
     for (size_t f = 0; f < F; ++f) {
         if (m.faces[f].size() < 3) continue;
-        rawN[f] = faceNormalRaw(m, m.faces[f]);
+        rawN[f] = faceNormalRaw(p, m.faces[f]);
         unitN[f] = normalize(rawN[f]);
     }
 
     std::vector<std::vector<int>> vertFaces;
     if (smooth) {
-        vertFaces.resize(m.verts.size());
+        vertFaces.resize(p.size());
         for (size_t f = 0; f < F; ++f)
             for (int v : m.faces[f]) vertFaces[v].push_back((int)f);
     }
@@ -447,10 +672,18 @@ void buildRenderData(const Mesh& m, bool smooth, float smoothAngleDeg, std::vect
                 if (dot(nn, nn) > 0.5f) cornerN[i] = nn;
             }
         }
+        auto corner = [&](size_t i) {
+            RenderVertex rv;
+            rv.pos = p[face[i]];
+            rv.normal = cornerN[i];
+            rv.uv = uvs ? m.uvs[f][i] : Vec2();
+            rv.weight = weights ? m.weights[face[i]].weightOf(weightSlot) : 0.0f;
+            return rv;
+        };
         for (size_t i = 1; i + 1 < n; ++i) {
-            out.push_back({m.verts[face[0]], cornerN[0]});
-            out.push_back({m.verts[face[i]], cornerN[i]});
-            out.push_back({m.verts[face[i + 1]], cornerN[i + 1]});
+            out.push_back(corner(0));
+            out.push_back(corner(i));
+            out.push_back(corner(i + 1));
         }
     }
 }

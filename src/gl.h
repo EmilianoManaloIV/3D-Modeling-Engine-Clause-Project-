@@ -50,6 +50,9 @@ typedef std::ptrdiff_t GLsizeiptr;
 #define GL_RENDERER 0x1F01
 #define GL_VERSION 0x1F02
 #define GL_NEAREST 0x2600
+#define GL_LINEAR_MIPMAP_LINEAR 0x2703
+#define GL_REPEAT 0x2901
+#define GL_RGB8 0x8051
 #define GL_LINEAR 0x2601
 #define GL_TEXTURE_MAG_FILTER 0x2800
 #define GL_TEXTURE_MIN_FILTER 0x2801
@@ -94,6 +97,7 @@ typedef std::ptrdiff_t GLsizeiptr;
     X(void, TexImage2D, (GLenum target, GLint level, GLint internalformat, GLsizei w, GLsizei h, GLint border, \
                          GLenum format, GLenum type, const void* pixels))                                    \
     X(void, TexParameteri, (GLenum target, GLenum pname, GLint param))                                       \
+    X(void, GenerateMipmap, (GLenum target))                                                                 \
     X(void, DrawArrays, (GLenum mode, GLint first, GLsizei count))                                           \
     X(void, GenBuffers, (GLsizei n, GLuint * buffers))                                                       \
     X(void, DeleteBuffers, (GLsizei n, const GLuint* buffers))                                               \

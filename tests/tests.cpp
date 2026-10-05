@@ -1,7 +1,11 @@
 // Unit tests for the OpenGL-free core (math, mesh operations, file I/O).
 // Build with -DMODELER_BUILD_TESTS=ON and run modeler_tests.
 #include "mesh.h"
+#include "parametric.h"
+#include "particles.h"
 #include "scene.h"
+#include "skin.h"
+#include "uv.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -232,6 +236,312 @@ static void testFiles() {
     std::remove("test_roundtrip.mtl");
 }
 
+// --- v2 features ---------------------------------------------------------
+
+static bool uvsValid(const Mesh& m, float lo, float hi) {
+    if (!m.hasUVs()) return false;
+    for (size_t f = 0; f < m.faces.size(); ++f) {
+        if (m.uvs[f].size() != m.faces[f].size()) return false;
+        for (const Vec2& t : m.uvs[f])
+            if (!std::isfinite(t.x) || !std::isfinite(t.y) || t.x < lo || t.x > hi || t.y < lo || t.y > hi) return false;
+    }
+    return true;
+}
+
+static void testUV() {
+    // Primitives come with UVs in 0..1.
+    CHECK(uvsValid(primitives::cube(), 0, 1));
+    CHECK(uvsValid(primitives::uvSphere(), 0, 1));
+    CHECK(uvsValid(primitives::cylinder(), 0, 1));
+    CHECK(uvsValid(primitives::torus(), 0, 1));
+
+    const uv::Method methods[] = {uv::Method::Smart, uv::Method::Box, uv::Method::Planar, uv::Method::PerFace};
+    for (uv::Method method : methods) {
+        Mesh g = generateParametric(defaultSpec(PS_Gear));
+        g.uvs.clear();
+        uv::unwrap(g, method);
+        bool ok = uvsValid(g, -1e-4f, 1 + 1e-4f);
+        if (!ok) std::printf("  unwrap %s out of range\n", uv::methodName(method));
+        CHECK(ok);
+    }
+    Mesh s = primitives::uvSphere();
+    uv::unwrap(s, uv::Method::Spherical);
+    CHECK(uvsValid(s, -1e-4f, 1.5f));  // seam-fixed faces may run past 1
+    uv::unwrap(s, uv::Method::Cylindrical);
+    CHECK(uvsValid(s, -1e-4f, 1.5f));
+
+    // Smart unwrap of a cube = 6 charts, packed without overlap.
+    Mesh c = primitives::cube();
+    uv::unwrap(c, uv::Method::Smart);
+    std::vector<int> all;
+    for (int f = 0; f < 6; ++f) all.push_back(f);
+    int islands = 0;
+    uv::islandIds(c, all, &islands);
+    CHECK(islands == 6);
+    bool overlap = false;
+    for (int a = 0; a < 6; ++a)
+        for (int b = a + 1; b < 6; ++b) {
+            Vec2 la, ha, lb, hb;
+            uv::bounds(c, {a}, la, ha);
+            uv::bounds(c, {b}, lb, hb);
+            if (la.x < hb.x - 1e-4f && lb.x < ha.x - 1e-4f && la.y < hb.y - 1e-4f && lb.y < ha.y - 1e-4f)
+                overlap = true;
+        }
+    CHECK(!overlap);
+
+    // A connected surface with continuous UVs is one island.
+    Mesh plane = primitives::plane(2, 4);
+    std::vector<int> pf;
+    for (int f = 0; f < 16; ++f) pf.push_back(f);
+    uv::islandIds(plane, pf, &islands);
+    CHECK(islands == 1);
+
+    // Tools: fit puts the selection into 0..1; rotate twice + flip both ways = identity.
+    Mesh t = primitives::plane(2, 2);
+    uv::translate(t, {}, Vec2(3, -2));
+    uv::fit(t);
+    Vec2 lo, hi;
+    uv::bounds(t, {}, lo, hi);
+    CHECK(near(lo.x, 0) && near(lo.y, 0) && near(std::max(hi.x, hi.y), 1));
+    Vec2 before = t.uvs[0][0];
+    uv::rotate90(t);
+    uv::rotate90(t);
+    uv::flip(t, {}, true);
+    uv::flip(t, {}, false);
+    CHECK(near(t.uvs[0][0].x, before.x) && near(t.uvs[0][0].y, before.y));
+
+    // Subdivision keeps UVs.
+    Mesh cc = catmullClark(primitives::cube());
+    CHECK(uvsValid(cc, 0, 1));
+}
+
+static void testParametric() {
+    for (int shape = 0; shape < PS_Count; ++shape) {
+        ParametricSpec spec = defaultSpec(shape);
+        Mesh m = generateParametric(spec);
+        bool ok = indicesValid(m) && !m.faces.empty() && m.hasUVs();
+        if (!ok) std::printf("  shape %s invalid\n", shapeDef(shape).name);
+        CHECK(ok);
+        if (shape != PS_Plane && shape != PS_Stairs) {
+            bool closed = closedAndConsistent(m);
+            if (!closed) std::printf("  shape %s not closed\n", shapeDef(shape).name);
+            CHECK(closed);
+        }
+        if (shape != PS_Plane) {
+            bool positive = signedVolume(m) > 0;
+            if (!positive) std::printf("  shape %s inside-out\n", shapeDef(shape).name);
+            CHECK(positive);
+        }
+    }
+    ParametricSpec gear = defaultSpec(PS_Gear);
+    gear.p[4] = 0;  // no hole -> fan caps
+    CHECK(closedAndConsistent(generateParametric(gear)));
+    ParametricSpec frustum = defaultSpec(PS_Cone);
+    frustum.p[1] = 0.5f;  // truncated cone
+    CHECK(closedAndConsistent(generateParametric(frustum)));
+
+    // Modifier stack.
+    ParametricSpec box = defaultSpec(PS_Cube);
+    Mesh plain = generateParametric(box);
+    box.subdivisions = 2;
+    Mesh sub = generateParametric(box);
+    CHECK(sub.faces.size() == plain.faces.size() * 16);
+    box.subdivisions = 0;
+    box.taper = 0.5f;
+    box.twist = 45;
+    Mesh tw = generateParametric(box);
+    CHECK(tw.verts.size() == plain.verts.size());
+    float topRadius = 0;
+    for (const Vec3& v : tw.verts)
+        if (v.y > 0.9f) topRadius = std::max(topRadius, std::sqrt(v.x * v.x + v.z * v.z));
+    CHECK(near(topRadius, std::sqrt(2.0f) * 0.5f, 1e-3f));  // corner radius sqrt(2), halved by the taper
+    // Parameters are clamped (integer params rounded).
+    ParametricSpec bad = defaultSpec(PS_Sphere);
+    bad.p[1] = 2.4f;
+    clampSpec(bad);
+    CHECK(bad.p[1] == 3.0f);
+}
+
+static void testHierarchy() {
+    Vec3 p, r, s;
+    Mat4 m = translation({1, 2, 3}) * eulerToMatrix({10, 20, 30}) * scaling({2, 3, 4});
+    decomposeTRS(m, p, r, s);
+    CHECK(near(p, {1, 2, 3}) && near(r, {10, 20, 30}, 1e-2f) && near(s, {2, 3, 4}, 1e-4f));
+
+    Scene sc;
+    int a = sc.add(primitives::cube(), "A", {1, 1, 1});
+    int b = sc.add(primitives::cube(), "B", {1, 1, 1});
+    int c = sc.add(primitives::cube(), "C", {1, 1, 1});
+    sc.objects[a].position = {5, 0, 0};
+    sc.objects[a].rotation = {0, 90, 0};
+    sc.objects[b].position = {0, 1, 0};
+    Vec3 bWorldBefore = transformPoint(sc.world(b), Vec3());
+    CHECK(sc.setParent(b, a, true));
+    CHECK(near(transformPoint(sc.world(b), Vec3()), bWorldBefore));  // keeps world position
+    CHECK(sc.setParent(c, b, false));
+    sc.objects[c].position = {0, 0, 1};
+    // keepWorld gave b a local rotation cancelling a's 90 degrees, so b (and
+    // c's offset along b's +Z) is still world-aligned.
+    Vec3 cw = transformPoint(sc.world(c), Vec3());
+    CHECK(near(cw, bWorldBefore + Vec3(0, 0, 1), 1e-4f));
+    CHECK(near(sc.objects[b].rotation, {0, -90, 0}, 1e-3f));
+    CHECK(!sc.setParent(a, c, true));  // cycle refused
+    CHECK(sc.isAncestor(a, c) && !sc.isAncestor(c, a));
+    CHECK(sc.descendants(a).size() == 2 && sc.depth(c) == 2);
+    // Moving the root moves the whole chain.
+    sc.objects[a].position += Vec3(0, 10, 0);
+    CHECK(near(transformPoint(sc.world(c), Vec3()), cw + Vec3(0, 10, 0), 1e-4f));
+    CHECK(sc.setParent(b, -1, true));
+    CHECK(near(transformPoint(sc.world(b), Vec3()), bWorldBefore + Vec3(0, 10, 0), 1e-4f));
+}
+
+static void testSkinning() {
+    BoneWeights w;
+    for (int i = 0; i < 6; ++i) w.add(i, 0.1f * (i + 1));
+    CHECK(w.weightOf(0) == 0 && w.weightOf(1) == 0 && w.weightOf(5) > 0);  // keeps the strongest 4
+    w.normalize();
+    CHECK(near(w.total(), 1.0f));
+
+    Scene s;
+    int col = s.add(primitives::box(0.5f, 4, 0.5f, 8), "Column", {1, 1, 1});
+    s.objects[col].position = {0, 2, 0};
+    Object root;
+    root.kind = ObjectKind::Bone;
+    root.boneLength = 2;
+    int r = s.addObject(root);
+    Object tip;
+    tip.kind = ObjectKind::Bone;
+    tip.boneLength = 2;
+    tip.position = {0, 2, 0};
+    tip.parent = s.objects[r].id;
+    int t = s.addObject(tip);
+    std::string err;
+    CHECK(bindSkin(s, col, {r, t}, err));
+    CHECK(isSkinned(s.objects[col]));
+    for (const BoneWeights& bw : s.objects[col].mesh.weights) CHECK(near(bw.total(), 1.0f, 1e-3f));
+
+    // Rest pose: skinning reproduces the plain world positions.
+    std::vector<Vec3> scratch;
+    Mat4 model;
+    const std::vector<Vec3>& rest = evaluateMesh(s, col, false, scratch, model);
+    Mat4 world = s.world(col);
+    bool same = true;
+    for (size_t v = 0; v < rest.size(); ++v)
+        same &= near(transformPoint(model, rest[v]), transformPoint(world, s.objects[col].mesh.verts[v]), 1e-4f);
+    CHECK(same);
+    uint64_t h0 = poseHash(s, col);
+
+    // Bend the tip bone 90 degrees: top vertices swing over, bottom ones stay.
+    s.objects[t].rotation = {0, 0, 90};
+    CHECK(poseHash(s, col) != h0);
+    const std::vector<Vec3>& posed = evaluateMesh(s, col, false, scratch, model);
+    float topX = 0, bottomMove = 0;
+    for (size_t v = 0; v < posed.size(); ++v) {
+        Vec3 orig = transformPoint(world, s.objects[col].mesh.verts[v]);
+        if (orig.y > 3.99f) topX = std::min(topX, posed[v].x);
+        if (orig.y < 0.01f) bottomMove = std::max(bottomMove, length(posed[v] - orig));
+    }
+    CHECK(topX < -1.5f);  // the tip rotated toward -X
+    CHECK(bottomMove < 1e-3f);
+
+    // Weights survive subdivision; unbinding clears them.
+    Mesh sub = catmullClark(s.objects[col].mesh);
+    CHECK(sub.hasWeights());
+    unbindSkin(s.objects[col]);
+    CHECK(!isSkinned(s.objects[col]) && !s.objects[col].mesh.hasWeights());
+}
+
+static void testParticles() {
+    ParticleSettings ps;
+    ps.rate = 100;
+    ps.lifetime = 10;
+    ParticleSystemState st;
+    Mat4 w = translation({0, 5, 0});
+    for (int i = 0; i < 50; ++i) stepParticles(st, ps, w, 0.01f);
+    CHECK(st.particles.size() >= 49 && st.particles.size() <= 51);
+    bool upward = true, nearEmitter = true;
+    for (const Particle& p : st.particles) {
+        upward &= p.vel.y > 0;
+        nearEmitter &= length(p.pos - Vec3(0, 5, 0)) < 3.0f;
+    }
+    CHECK(upward && nearEmitter);
+    std::vector<ParticleVertex> verts;
+    appendParticleVertices(st, ps, verts);
+    CHECK(verts.size() == st.particles.size());
+    // Once spawning stops and lifetimes run out, the system empties.
+    ParticleSettings shortLived = ps;
+    shortLived.rate = 0;
+    for (Particle& p : st.particles) p.life = 0.05f;
+    for (int i = 0; i < 20; ++i) stepParticles(st, shortLived, w, 0.01f);
+    CHECK(st.particles.empty());
+}
+
+static void testFilesV2() {
+    Scene s;
+    int gear = s.add(generateParametric(defaultSpec(PS_Gear)), "Gear", {0.2f, 0.4f, 0.6f});
+    s.objects[gear].param = defaultSpec(PS_Gear);
+    s.objects[gear].emission = {1, 0.5f, 0};
+    s.objects[gear].emissionStrength = 3;
+    s.objects[gear].gloss = 0.9f;
+    Object light;
+    light.kind = ObjectKind::Light;
+    light.name = "Lamp";
+    light.light.type = LightType::Spot;
+    light.light.intensity = 42;
+    light.light.spotAngle = 33;
+    light.parent = s.objects[gear].id;
+    s.addObject(light);
+    Object bone;
+    bone.kind = ObjectKind::Bone;
+    bone.boneLength = 1.5f;
+    int bi = s.addObject(bone);
+    Object emitter;
+    emitter.kind = ObjectKind::Emitter;
+    emitter.particles.rate = 77;
+    emitter.particles.additive = false;
+    s.addObject(emitter);
+    std::string err;
+    CHECK(bindSkin(s, gear, {bi}, err));
+    s.ambient = {0.1f, 0.2f, 0.3f};
+
+    CHECK(saveScene(s, "test_v2.m3d", err));
+    Scene l;
+    CHECK(loadScene(l, "test_v2.m3d", err));
+    CHECK(l.objects.size() == 4);
+    if (l.objects.size() == 4) {
+        const Object& g = l.objects[0];
+        CHECK(g.param.shape == PS_Gear && near(g.emissionStrength, 3) && near(g.gloss, 0.9f));
+        CHECK(g.mesh.hasUVs() && g.mesh.uvs.size() == s.objects[0].mesh.uvs.size());
+        CHECK(isSkinned(g) && g.skinBones.size() == 1 && g.skinBones[0] == l.objects[2].id);
+        CHECK(l.objects[1].kind == ObjectKind::Light && l.objects[1].light.type == LightType::Spot);
+        CHECK(near(l.objects[1].light.intensity, 42) && l.objects[1].parent == g.id);
+        CHECK(l.objects[2].kind == ObjectKind::Bone && near(l.objects[2].boneLength, 1.5f) && l.objects[2].hasRest);
+        CHECK(l.objects[3].kind == ObjectKind::Emitter && near(l.objects[3].particles.rate, 77) &&
+              !l.objects[3].particles.additive);
+        CHECK(near(l.ambient, {0.1f, 0.2f, 0.3f}));
+    }
+
+    // OBJ round trip keeps UVs (vt); only meshes are exported.
+    int count = 0;
+    CHECK(exportOBJ(s, "test_v2.obj", err, &count));
+    CHECK(count == 1);
+    Scene imp;
+    CHECK(importOBJ(imp, "test_v2.obj", err));
+    CHECK(imp.objects.size() == 1 && imp.objects[0].mesh.hasUVs());
+    if (imp.objects.size() == 1 && imp.objects[0].mesh.hasUVs()) {
+        const Mesh& a = s.objects[0].mesh;
+        const Mesh& b = imp.objects[0].mesh;
+        bool uvSame = a.uvs.size() == b.uvs.size();
+        for (size_t f = 0; uvSame && f < a.uvs.size(); ++f)
+            for (size_t k = 0; k < a.uvs[f].size(); ++k)
+                uvSame &= near(a.uvs[f][k].x, b.uvs[f][k].x, 1e-5f) && near(a.uvs[f][k].y, b.uvs[f][k].y, 1e-5f);
+        CHECK(uvSame);
+    }
+    std::remove("test_v2.m3d");
+    std::remove("test_v2.obj");
+    std::remove("test_v2.mtl");
+}
+
 int main() {
     testMath();
     testPrimitives();
@@ -239,6 +549,12 @@ int main() {
     testExtrudeAndDelete();
     testRaycast();
     testFiles();
+    testUV();
+    testParametric();
+    testHierarchy();
+    testSkinning();
+    testParticles();
+    testFilesV2();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
