@@ -190,6 +190,27 @@ void UI::header(const Rect& r, const std::string& label) {
     if (lx < r.x + r.w) rect({lx, std::floor(r.y + r.h * 0.5f), r.x + r.w - lx, (float)std::max(1, fs / 2)}, theme::border);
 }
 
+bool UI::foldHeader(uint32_t id, const Rect& r, const std::string& label, bool open) {
+    bool hot = hovered(r);
+    bool clicked = false;
+    if (hot && in_->mousePressed[MOUSE_LEFT] && activeId_ == 0) activeId_ = id;
+    if (activeId_ == id) {
+        activeSeen_ = true;
+        if (!in_->mouseDown[MOUSE_LEFT]) {
+            clicked = hot;
+            activeId_ = 0;
+        }
+    }
+    if (hot) rect(r, withAlpha(theme::buttonHover, 0.5f));
+    const float box = (float)(5 * fs), y = r.y + (r.h - box) * 0.5f;
+    const Color c = hot ? theme::text : theme::textDim;
+    rect({r.x + fs, y + box * 0.5f - fs * 0.5f, box, (float)fs}, c);                  // "-"
+    if (!open) rect({r.x + fs + box * 0.5f - fs * 0.5f, y, (float)fs, box}, c);     // "+"
+    Rect rest{r.x + box + 4.0f * fs, r.y, r.w - box - 4.0f * fs, r.h};
+    header(rest, label);
+    return clicked;
+}
+
 // --- widgets -----------------------------------------------------------------
 
 bool UI::button(uint32_t id, const Rect& r, const std::string& label, bool toggled) {

@@ -32,12 +32,15 @@ enum class Action {
     ToolHand, ToolMove, ToolRotate, ToolScale, ToolUniversal, ToggleLocalGlobal, TogglePivotCenter,
     CycleShading, ToggleWireframe, ModalGrab, ModalRotate, ModalScale,
     Render, LookThroughCamera, AlignCameraToView, CameraForward, CameraBack, CameraLeft, CameraRight,
+    CommandPalette, JoinObjects, OrbitLeft, OrbitRight, OrbitUp, OrbitDown, ZoomIn, ZoomOut,
+    WorkspaceModel, WorkspaceTexture, WorkspaceRig, WorkspaceLight, WorkspaceRender,
     // Fly (RMB held, Unity)
     FlyForward, FlyBack, FlyLeft, FlyRight, FlyUp, FlyDown,
     // Modal transform
     AxisX, AxisY, AxisZ,
     // Edit mode
     SelectVertices, SelectEdges, SelectFaces, Inset,
+    Bevel, LoopCut, Connect, Fill, Merge, PushIn, SelectLoop, SelectRing, SelectLinked,
     Count
 };
 constexpr int kActionCount = (int)Action::Count;

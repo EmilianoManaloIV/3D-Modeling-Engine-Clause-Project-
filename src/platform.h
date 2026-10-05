@@ -9,7 +9,9 @@
 #include <string>
 #include <vector>
 
-// Letters and digits use their uppercase ASCII codes ('A', '7', ...).
+// Letters and digits use their uppercase ASCII codes ('A', '7', ...);
+// punctuation keys use their unshifted ASCII code ('-', '=', '/', '[', ...),
+// so a binding names the key cap, whatever the layout's Shift produces.
 enum Key : int {
     KEY_SPACE = 32,
     KEY_ESCAPE = 256,
@@ -37,6 +39,8 @@ struct Input {
     float mouseX = 0, mouseY = 0;    // window pixels, origin top-left
     float mouseDX = 0, mouseDY = 0;  // motion this frame
     float wheel = 0;                 // notches this frame (+ = away from user)
+    float wheelX = 0;                // horizontal scroll (trackpads, tilt wheels; + = right)
+    bool pinch = false;              // the wheel motion is a touchpad pinch (Ctrl+wheel from the OS)
     bool mouseDown[3] = {};
     bool mousePressed[3] = {};
     bool mouseReleased[3] = {};
@@ -53,7 +57,8 @@ struct Input {
     bool pressed(int k) const { return k > 0 && k < KEY_COUNT && keyPressed[k]; }
 
     void beginFrame() {
-        mouseDX = mouseDY = wheel = 0;
+        mouseDX = mouseDY = wheel = wheelX = 0;
+        pinch = false;
         std::fill(std::begin(mousePressed), std::end(mousePressed), false);
         std::fill(std::begin(mouseReleased), std::end(mouseReleased), false);
         std::fill(std::begin(keyPressed), std::end(keyPressed), false);

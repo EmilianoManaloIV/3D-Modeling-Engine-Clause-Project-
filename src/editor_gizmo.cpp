@@ -530,6 +530,10 @@ void Editor::loadConfig() {
             else if (n == "fly_accel") camSet_.flyAcceleration = b;
             else if (n == "fly_speed") flySpeed_ = clampf(v, 0.01f, 100.0f);
             else if (n == "fov") cam_.fovY = clampf(v, 10.0f, 120.0f);
+            else if (n == "trackpad") camSet_.trackpad = b;
+            else if (n == "nav_buttons") camSet_.navWidget = b;
+        } else if (std::sscanf(s.c_str(), "ui_scale %d", &b) == 1) {
+            uiScale_ = std::max(0, std::min(b, 4));
         }
     }
     std::fclose(f);
@@ -541,15 +545,17 @@ void Editor::loadConfig() {
 void Editor::saveConfig() {
     if (configPath_.empty()) return;
     if (FILE* f = std::fopen(configPath_.c_str(), "wb")) {
-        std::fprintf(f, "# Modeler3D settings (edit in the Keys and Camera tabs)\nkeymap %s\n",
+        std::fprintf(f, "# Modeler3D settings (edit them in Preferences)\nkeymap %s\n",
                      keymap_ == Keymap::Unity ? "unity" : "blender");
         const CameraSettings& c = camSet_;
         std::fprintf(f,
                      "camera orbit %g\ncamera look %g\ncamera pan %g\ncamera zoom %g\ncamera arrows %g\n"
                      "camera fast %g\ncamera transition %g\ncamera invert_x %d\ncamera invert_y %d\n"
-                     "camera fly_accel %d\ncamera fly_speed %g\ncamera fov %g\n",
+                     "camera fly_accel %d\ncamera fly_speed %g\ncamera fov %g\ncamera trackpad %d\n"
+                     "camera nav_buttons %d\nui_scale %d\n",
                      c.orbitSensitivity, c.lookSensitivity, c.panSpeed, c.zoomSpeed, c.arrowSpeed, c.fastMultiplier,
-                     c.transition, (int)c.invertX, (int)c.invertY, (int)c.flyAcceleration, flySpeed_, cam_.fovY);
+                     c.transition, (int)c.invertX, (int)c.invertY, (int)c.flyAcceleration, flySpeed_, cam_.fovY,
+                     (int)c.trackpad, (int)c.navWidget, uiScale_);
         std::fputs(keys_.serialize().c_str(), f);
         std::fclose(f);
     }

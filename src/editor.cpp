@@ -118,13 +118,20 @@ void Editor::frame(const Input& in, int width, int height, float dt) {
         saveConfig();
     }
 
-    // Layout: tool panel | viewport | properties panel, status bar at bottom.
+    // UI scale: automatic from the DPI, or the user's choice (Preferences).
+    fontScale_ = uiScale_ > 0 ? uiScale_ : std::max(1, (int)(dpi_ * 2.0f + 0.25f));
+    // Small windows: step the scale down until the panels leave a usable viewport.
+    while (uiScale_ == 0 && fontScale_ > 1 && (276.0f * fontScale_ > width * 0.62f || 150.0f * fontScale_ > height * 0.5f)) --fontScale_;
+
+    // Layout: top bar (pipeline stages, menus) above
+    //         tool panel | viewport | outliner + properties, status bar at the bottom.
     const float fs = (float)fontScale_;
-    const float lw = 136 * fs, rw = 140 * fs, sb = 12 * fs;
-    leftPanel_ = {0, 0, lw, height - sb};
-    rightPanel_ = {width - rw, 0, rw, height - sb};
+    const float lw = 136 * fs, rw = 140 * fs, sb = 12 * fs, tb = 12 * fs + 6 * fs;  // tb: a button row + padding
+    topBar_ = {0, 0, (float)width, tb};
+    leftPanel_ = {0, tb, lw, height - sb - tb};
+    rightPanel_ = {width - rw, tb, rw, height - sb - tb};
     statusBar_ = {0, height - sb, (float)width, sb};
-    viewport_ = {lw, 0, std::max(1.0f, width - lw - rw), std::max(1.0f, height - sb)};
+    viewport_ = {lw, tb, std::max(1.0f, width - lw - rw), std::max(1.0f, height - sb - tb)};
     headerRect_ = {viewport_.x, viewport_.y, viewport_.w, ui_.rowHeight() + 6 * fs};
     if (uvEditor_) {
         float size = std::floor(std::min(viewport_.w, viewport_.h - headerRect_.h) * 0.46f);
@@ -140,16 +147,20 @@ void Editor::frame(const Input& in, int width, int height, float dt) {
         updateParticles(dt);
     }
 
-    const bool modal = confirmQuit_ || showHelp_;
+    const bool modal = confirmQuit_ || showHelp_ || paletteOpen_;
+    // Clicks on the open File menu must not reach the panels beneath it.
+    const bool overMenu = fileMenu_ && fileMenuRect_.contains(in.mouseX, in.mouseY);
     ui_.begin(in, width, height, fontScale_);
     {
         PROF_SCOPE("ui build (panels)");
-        ui_.setInputEnabled(xf_ == Xform::None && !modal);
+        ui_.setInputEnabled(xf_ == Xform::None && !opModal_ && !modal && !overMenu);
         buildLeftPanel(in);
         buildRightPanel(in);
         buildStatusBar();
         buildViewportHeader();
         buildViewportToolbar();
+        ui_.setInputEnabled(xf_ == Xform::None && !opModal_ && !modal);
+        buildTopBar(in);
         ui_.setInputEnabled(true);
     }
     {
@@ -158,6 +169,10 @@ void Editor::frame(const Input& in, int width, int height, float dt) {
             if (in.pressed(KEY_ESCAPE)) confirmQuit_ = false;
         } else if (showHelp_) {
             if (anyKeyPressed(in)) showHelp_ = false;
+        } else if (handlePalette(in)) {
+            // the command search owns the keyboard and mouse while open
+        } else if (fileMenu_ && (overMenu || in.pressed(KEY_ESCAPE))) {
+            // the menu handles it (built below, on top)
         } else {
             if (!ui_.keyboardUsedThisFrame() && !ui_.wantsKeyboard()) handleShortcuts(in);
             handleViewport(in);
@@ -166,9 +181,13 @@ void Editor::frame(const Input& in, int width, int height, float dt) {
     updateMatrices();
     {
         PROF_SCOPE("ui build (overlays)");
+        ui_.setInputEnabled(!paletteOpen_ && !confirmQuit_ && !showHelp_);
         buildViewportOverlay();
         if (uvEditor_) buildUvEditor();
         if (showStats_) buildStatsOverlay();
+        buildFileMenu(in);
+        ui_.setInputEnabled(true);
+        buildPalette();
         if (showHelp_) buildHelp();
         if (confirmQuit_) buildQuitDialog();
     }
@@ -321,10 +340,84 @@ int Editor::displayWeightSlot(const Object& o) const {
 }
 
 // ============================================================================
+// Automation helpers
+// ============================================================================
+bool Editor::checkInvariants(std::string& err) const {
+    const int n = (int)scene_.objects.size();
+    if (scene_.active < -1 || scene_.active >= n) return err = "active index out of range", false;
+    auto finite = [](Vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); };
+    for (int i = 0; i < n; ++i) {
+        const Object& o = scene_.objects[i];
+        if (!finite(o.position) || !finite(o.rotation) || !finite(o.scale)) return err = o.name + ": non-finite transform", false;
+        int p = scene_.parentIndex(i), guard = 0;
+        while (p >= 0 && guard++ < n + 1) p = scene_.parentIndex(p);
+        if (guard > n) return err = o.name + ": parent cycle", false;
+        if (!o.isMesh()) continue;
+        const Mesh& m = o.mesh;
+        for (const Vec3& v : m.verts)
+            if (!finite(v)) return err = o.name + ": non-finite vertex", false;
+        for (size_t f = 0; f < m.faces.size(); ++f) {
+            if (m.faces[f].size() < 3) return err = o.name + strf(": face %d has %d corners", (int)f, (int)m.faces[f].size()), false;
+            for (int v : m.faces[f])
+                if (v < 0 || v >= (int)m.verts.size()) return err = o.name + ": face index out of range", false;
+        }
+        if (!m.uvs.empty() && !m.hasUVs()) return err = o.name + ": UV array does not match the faces", false;
+        for (size_t f = 0; f < m.uvs.size(); ++f)
+            if (m.uvs[f].size() != m.faces[f].size()) return err = o.name + ": UV corner count mismatch", false;
+        if (!m.weights.empty() && m.weights.size() != m.verts.size()) return err = o.name + ": weight count mismatch", false;
+    }
+    if (mode_ == Mode::Edit && !(scene_.active >= 0 && scene_.objects[scene_.active].isMesh()))
+        return err = "edit mode without an active mesh", false;
+    if (!std::isfinite(cam_.distance) || !std::isfinite(cam_.yaw) || !std::isfinite(cam_.pitch) ||
+        !std::isfinite(cam_.target.x) || !std::isfinite(cam_.target.y) || !std::isfinite(cam_.target.z))
+        return err = "camera became non-finite", false;
+    return true;
+}
+
+std::string Editor::summary() const {
+    std::string s = strf("%s ws=%s mode=%s objects=%d", prefsOpen_ ? "prefs" : "", workspaceName(workspace_),
+                         mode_ == Mode::Edit ? "edit" : "object", (int)scene_.objects.size());
+    if (scene_.active >= 0 && scene_.active < (int)scene_.objects.size()) {
+        const Object& o = scene_.objects[scene_.active];
+        s += " active=\"" + o.name + "\"";
+        if (o.isMesh()) s += strf(" verts=%d faces=%d", (int)o.mesh.verts.size(), (int)o.mesh.faces.size());
+    }
+    s += strf(" undo=%d tris=%d | %s", (int)undo_.size(), (int)scene_.triangleCount(), status_.c_str());
+    return s;
+}
+
+// ============================================================================
 // Undo / redo: whole-scene snapshots (simple and robust for a small editor;
 // a command pattern would store deltas instead).
 // ============================================================================
-Editor::Snapshot Editor::snapshot() const { return {scene_.objects, scene_.active, vsel_, scene_.ambient}; }
+std::shared_ptr<const Mesh> Editor::shareMesh(const Mesh& m) {
+    if (m.version != 0) {
+        auto it = meshPool_.find(m.version);
+        if (it != meshPool_.end())
+            if (std::shared_ptr<const Mesh> p = it->second.lock()) return p;
+    }
+    auto p = std::make_shared<const Mesh>(m);
+    if (m.version != 0) meshPool_[m.version] = p;
+    // Forget stamps whose copies are gone (undo steps dropped).
+    if (meshPool_.size() > 4 * (kMaxUndo + scene_.objects.size()) + 64)
+        for (auto i = meshPool_.begin(); i != meshPool_.end();) i = i->second.expired() ? meshPool_.erase(i) : std::next(i);
+    return p;
+}
+
+Editor::Snapshot Editor::snapshot() {
+    PROF_SCOPE("undo snapshot");
+    Snapshot s{{}, {}, scene_.active, vsel_, scene_.ambient};
+    s.objects.reserve(scene_.objects.size());
+    s.meshes.reserve(scene_.objects.size());
+    for (Object& o : scene_.objects) {
+        s.meshes.push_back(o.isMesh() || !o.mesh.verts.empty() ? shareMesh(o.mesh) : nullptr);
+        Mesh live;
+        std::swap(live, o.mesh);  // copy the object without its mesh data
+        s.objects.push_back(o);
+        std::swap(live, o.mesh);
+    }
+    return s;
+}
 
 void Editor::pushUndo() {
     undo_.push_back(snapshot());
@@ -344,6 +437,17 @@ void Editor::beginEdit(uint32_t widgetId) {
 void Editor::markDirty() { dirty_ = true; }
 
 void Editor::restore(Snapshot s) {
+    // Meshes whose stamp matches the live one are moved over, not copied.
+    std::unordered_map<uint32_t, Mesh*> live;
+    for (Object& o : scene_.objects) live[o.id] = &o.mesh;
+    for (size_t i = 0; i < s.objects.size(); ++i) {
+        if (!s.meshes[i]) continue;
+        auto it = live.find(s.objects[i].id);
+        if (it != live.end() && it->second->version == s.meshes[i]->version && s.meshes[i]->version != 0)
+            s.objects[i].mesh = std::move(*it->second);
+        else
+            s.objects[i].mesh = *s.meshes[i];
+    }
     scene_.objects = std::move(s.objects);
     scene_.active = s.active < (int)scene_.objects.size() ? s.active : -1;
     scene_.ambient = s.ambient;
@@ -590,7 +694,7 @@ void Editor::setTool(Tool t) {
 }
 
 void Editor::handleShortcuts(const Input& in) {
-    if (xf_ != Xform::None || insetModal_ || captureAction_ >= 0 || swallowKeys_) return;
+    if (xf_ != Xform::None || opModal_ || captureAction_ >= 0 || swallowKeys_) return;
     if (keys_.pressed(input::Action::Render, in)) {  // also works while the render view is up
         toggleRenderView();
         return;
@@ -605,7 +709,23 @@ void Editor::handleShortcuts(const Input& in) {
         if (hit(Action::SelectEdges)) return setSelMode(SelMode::Edge);
         if (hit(Action::SelectFaces)) return setSelMode(SelMode::Face);
         if (hit(Action::Inset)) return insetSelected(true);
+        if (hit(Action::Bevel)) return (void)startMeshOp(OpType::Bevel, true);
+        if (hit(Action::PushIn)) return (void)startMeshOp(OpType::Push, true);
+        if (hit(Action::LoopCut)) return (void)startMeshOp(OpType::LoopCut, false);
+        if (hit(Action::Connect)) return connectSelected();
+        if (hit(Action::Fill)) return fillSelected();
+        if (hit(Action::Merge)) return mergeSelected();
+        if (hit(Action::SelectLoop)) return selectLoop(false);
+        if (hit(Action::SelectRing)) return selectLoop(true);
+        if (hit(Action::SelectLinked)) return selectLinked();
     }
+    if (hit(Action::CommandPalette)) return openPalette();
+    if (hit(Action::JoinObjects)) joinSelected();
+    if (hit(Action::WorkspaceModel)) setWorkspace(WS_MODEL);
+    if (hit(Action::WorkspaceTexture)) setWorkspace(WS_TEXTURE);
+    if (hit(Action::WorkspaceRig)) setWorkspace(WS_RIG);
+    if (hit(Action::WorkspaceLight)) setWorkspace(WS_LIGHT);
+    if (hit(Action::WorkspaceRender)) setWorkspace(WS_RENDER);
     if (hit(Action::Help)) showHelp_ = true;
     if (hit(Action::Stats)) showStats_ = !showStats_;
     if (hit(Action::Screenshot)) screenshotPending_ = true;
@@ -694,19 +814,37 @@ void Editor::handleViewport(const Input& in) {
     const bool unity = keymap_ == Keymap::Unity;
     const bool overUi = headerRect_.contains(in.mouseX, in.mouseY) || toolbarRect_.contains(in.mouseX, in.mouseY) ||
                         (uvEditor_ && uvRect_.contains(in.mouseX, in.mouseY));
-    const bool overGizmo = sceneGizmoRect_.contains(in.mouseX, in.mouseY);
+    navHover_ = (nav_ == Nav::None && !ui_.isActive()) ? navWidgetPick({in.mouseX, in.mouseY}) : -1;
+    const bool overGizmo = sceneGizmoRect_.contains(in.mouseX, in.mouseY) || navHover_ >= 0;
     const bool over = viewport_.contains(in.mouseX, in.mouseY) && !ui_.isActive() && !overUi && !overGizmo;
+    const bool scrolled = in.wheel != 0.0f || in.wheelX != 0.0f;
     if (nav_ == Nav::Fly && in.wheel != 0.0f) {
         // Unity: scrolling while flying changes the fly speed instead of zooming.
         flySpeed_ = clampf(flySpeed_ * std::pow(1.25f, in.wheel), 0.01f, 100.0f);
         setStatus(strf("Fly speed x%.2f", flySpeed_));
-    } else if ((over || overGizmo) && in.wheel != 0.0f) {
+    } else if ((over || overGizmo) && scrolled && !opModal_) {
         camAnimating_ = false;
-        cam_.distance = clampf(cam_.distance * std::pow(0.85f, in.wheel * camSet_.zoomSpeed), 0.05f, 5000.0f);
+        const bool zoom = in.pinch || in.ctrl();
+        if (camSet_.trackpad && !zoom) {
+            // Two-finger scroll: orbit (Shift: pan), like most trackpad-first apps.
+            if (in.shift()) {
+                float k = worldPerPixel(cam_.target) * camSet_.panSpeed * 24.0f;
+                cam_.target -= camRight() * (in.wheelX * k);
+                cam_.target += camUp() * (in.wheel * k);
+            } else {
+                const float deg = 6.0f * camSet_.orbitSensitivity / 0.4f;
+                cam_.yaw -= in.wheelX * deg * (camSet_.invertX ? -1.0f : 1.0f);
+                cam_.pitch = clampf(cam_.pitch - in.wheel * deg * (camSet_.invertY ? -1.0f : 1.0f), -89.9f, 89.9f);
+            }
+        } else {
+            cam_.distance = clampf(cam_.distance * std::pow(0.85f, in.wheel * camSet_.zoomSpeed), 0.05f, 5000.0f);
+            if (in.wheelX != 0.0f) cam_.yaw -= in.wheelX * 6.0f;  // tilt wheel / sideways swipe orbits
+        }
+        updateMatrices();
     }
 
     // --- interactive inset owns the mouse ---
-    if (updateInsetModal(in)) return;
+    if (updateOpModal(in)) return;
 
     // --- an active transform owns the mouse ---
     if (xf_ != Xform::None) {
@@ -744,6 +882,19 @@ void Editor::handleViewport(const Input& in) {
         clickSceneGizmo(sceneGizmoHover_);
         return;
     }
+    // --- on-screen nav buttons: drag Orbit / Pan / Zoom, click Fit ---
+    if (navHover_ >= 0 && in.mousePressed[MOUSE_LEFT] && !lmbInViewport_ && nav_ == Nav::None) {
+        if (navHover_ == 3) {
+            frameSelected();
+        } else {
+            static const Nav kinds[3] = {Nav::Orbit, Nav::Pan, Nav::Zoom};
+            nav_ = kinds[navHover_];
+            navButton_ = MOUSE_LEFT;
+            navFromWidget_ = true;
+            camAnimating_ = false;
+        }
+        return;
+    }
 
     // --- arrow keys (rebindable) move the scene camera (Shift = faster) ---
     if (nav_ == Nav::None && !ui_.wantsKeyboard() && !ui_.keyboardUsedThisFrame() && captureAction_ < 0) {
@@ -762,6 +913,23 @@ void Editor::handleViewport(const Input& in) {
             cam_.target += normalize(move) * (speed * lastDt_);
             updateMatrices();
         }
+        // Keyboard orbit (Alt+arrows) and zoom (= / -): no mouse needed.
+        const float fast = in.shift() ? camSet_.fastMultiplier : 1.0f;
+        float yawRate = 0, pitchRate = 0, zoomRate = 0;
+        if (keys_.down(input::Action::OrbitLeft, in)) yawRate += 1;
+        if (keys_.down(input::Action::OrbitRight, in)) yawRate -= 1;
+        if (keys_.down(input::Action::OrbitUp, in)) pitchRate += 1;
+        if (keys_.down(input::Action::OrbitDown, in)) pitchRate -= 1;
+        if (keys_.down(input::Action::ZoomIn, in)) zoomRate -= 1;
+        if (keys_.down(input::Action::ZoomOut, in)) zoomRate += 1;
+        if (yawRate != 0 || pitchRate != 0 || zoomRate != 0) {
+            camAnimating_ = false;
+            const float degPerSec = 90.0f * camSet_.arrowSpeed * fast;
+            cam_.yaw += yawRate * degPerSec * lastDt_ * (camSet_.invertX ? -1.0f : 1.0f);
+            cam_.pitch = clampf(cam_.pitch + pitchRate * degPerSec * lastDt_ * (camSet_.invertY ? -1.0f : 1.0f), -89.9f, 89.9f);
+            cam_.distance = clampf(cam_.distance * std::exp(zoomRate * 1.5f * lastDt_ * camSet_.zoomSpeed * fast), 0.05f, 5000.0f);
+            updateMatrices();
+        }
     }
 
     // --- camera navigation ---
@@ -770,19 +938,24 @@ void Editor::handleViewport(const Input& in) {
     if (nav_ == Nav::None && over) {
         int b = -1;
         Nav kind = Nav::Orbit;
+        // Left button + Alt works in both keymaps, so a one-button trackpad can
+        // do everything: Alt = orbit, Alt+Shift = pan, Alt+Ctrl = zoom.
+        const bool altLeft = in.mousePressed[MOUSE_LEFT] && in.alt();
+        const Nav altKind = in.shift() ? Nav::Pan : in.ctrl() ? Nav::Zoom : Nav::Orbit;
         if (unity) {
             if (in.mousePressed[MOUSE_MIDDLE]) b = MOUSE_MIDDLE, kind = Nav::Pan;
             else if (in.mousePressed[MOUSE_RIGHT]) b = MOUSE_RIGHT, kind = in.alt() ? Nav::Zoom : Nav::Fly;
-            else if (in.mousePressed[MOUSE_LEFT] && in.alt()) b = MOUSE_LEFT, kind = Nav::Orbit;
+            else if (altLeft) b = MOUSE_LEFT, kind = altKind;
             else if (in.mousePressed[MOUSE_LEFT] && tool_ == Tool::Hand) b = MOUSE_LEFT, kind = Nav::Pan;
         } else {
             if (in.mousePressed[MOUSE_MIDDLE]) b = MOUSE_MIDDLE;
             else if (in.mousePressed[MOUSE_RIGHT]) b = MOUSE_RIGHT;
-            else if (in.mousePressed[MOUSE_LEFT] && in.alt()) b = MOUSE_LEFT;
+            else if (altLeft) b = MOUSE_LEFT, kind = altKind;
         }
         if (b >= 0) {
             nav_ = kind;
             navButton_ = b;
+            navFromWidget_ = false;
             camAnimating_ = false;  // user input takes over from any transition
             flyHold_ = 0;
         }
@@ -790,8 +963,9 @@ void Editor::handleViewport(const Input& in) {
     if (nav_ != Nav::None) {
         if (!in.mouseDown[navButton_]) {
             nav_ = Nav::None;
+            navFromWidget_ = false;
         } else {
-            if (!unity) nav_ = in.shift() ? Nav::Pan : Nav::Orbit;
+            if (!unity && !navFromWidget_ && navButton_ != MOUSE_LEFT) nav_ = in.shift() ? Nav::Pan : Nav::Orbit;
             // Inversion applies to rotation (orbit / mouse-look).
             const float dx = in.mouseDX * (camSet_.invertX ? -1.0f : 1.0f);
             const float dy = in.mouseDY * (camSet_.invertY ? -1.0f : 1.0f);

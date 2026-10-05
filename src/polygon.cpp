@@ -42,43 +42,90 @@ bool inTriangle(Vec2 p, Vec2 a, Vec2 b, Vec2 c, float eps) {
     return orient(a, b, p) >= -eps && orient(b, c, p) >= -eps && orient(c, a, p) >= -eps;
 }
 
+// Points bucketed into a uniform grid, stored compactly (one sorted array
+// plus a cell -> range table) instead of one small vector per cell, which
+// made welding / T-junction repair allocation-bound on dense meshes.
+struct PointGrid {
+    float cell = 1.0f;
+    std::vector<int> items;                                   // point indices sorted by cell
+    std::unordered_map<uint64_t, std::pair<int, int>> range;  // cell -> [first, count)
+    static uint64_t key(long long x, long long y, long long z) {
+        return (uint64_t(x & 0x1FFFFF) << 42) | (uint64_t(y & 0x1FFFFF) << 21) | uint64_t(z & 0x1FFFFF);
+    }
+    void coords(Vec3 p, long long& x, long long& y, long long& z) const {
+        x = (long long)std::floor(p.x / cell), y = (long long)std::floor(p.y / cell), z = (long long)std::floor(p.z / cell);
+    }
+    void build(const std::vector<Vec3>& pts, float cellSize) {
+        cell = cellSize;
+        std::vector<std::pair<uint64_t, int>> keyed(pts.size());
+        for (size_t i = 0; i < pts.size(); ++i) {
+            long long x, y, z;
+            coords(pts[i], x, y, z);
+            keyed[i] = {key(x, y, z), (int)i};
+        }
+        std::sort(keyed.begin(), keyed.end());
+        items.resize(keyed.size());
+        range.clear();
+        range.reserve(keyed.size() / 2 + 16);
+        for (size_t i = 0; i < keyed.size(); ++i) {
+            items[i] = keyed[i].second;
+            auto& r = range[keyed[i].first];
+            if (r.second == 0) r.first = (int)i;
+            r.second++;
+        }
+    }
+    template <class F>
+    void forCell(long long x, long long y, long long z, F&& f) const {
+        auto it = range.find(key(x, y, z));
+        if (it == range.end()) return;
+        for (int k = it->second.first; k < it->second.first + it->second.second; ++k) f(items[k]);
+    }
+};
+
 // Merges vertices within `eps` of each other. Unlike rounding to a grid, the
 // 27-cell neighbourhood search also catches pairs straddling a cell border.
+// Each vertex joins the first earlier vertex (that was itself kept) in range,
+// exactly as an incremental weld would.
 int weldNear(Mesh& m, float eps) {
-    const float inv = 1.0f / eps;
-    auto cellKey = [](long long x, long long y, long long z) {
-        return (uint64_t(x & 0x1FFFFF) << 42) | (uint64_t(y & 0x1FFFFF) << 21) | uint64_t(z & 0x1FFFFF);
-    };
-    std::unordered_map<uint64_t, std::vector<int>> grid;  // cell -> kept vertex indices
-    std::vector<int> remap(m.verts.size());
+    const size_t n = m.verts.size();
+    PointGrid grid;
+    grid.build(m.verts, eps * 4.0f);  // cells 4x eps: most points only need their own cell
+    std::vector<int> rep(n, -1);
+    for (size_t i = 0; i < n; ++i) {
+        const Vec3 p = m.verts[i];
+        long long cx, cy, cz;
+        grid.coords(p, cx, cy, cz);
+        // Neighbour cells only on the sides where p is within eps of the border.
+        int lo[3], hi[3];
+        const long long c[3] = {cx, cy, cz};
+        for (int k = 0; k < 3; ++k) {
+            float frac = p[k] - (float)c[k] * grid.cell;
+            lo[k] = frac < eps ? -1 : 0;
+            hi[k] = frac > grid.cell - eps ? 1 : 0;
+        }
+        int found = -1;
+        for (int dx = lo[0]; dx <= hi[0]; ++dx)
+            for (int dy = lo[1]; dy <= hi[1]; ++dy)
+                for (int dz = lo[2]; dz <= hi[2]; ++dz)
+                    grid.forCell(cx + dx, cy + dy, cz + dz, [&](int j) {
+                        if (j < (int)i && rep[j] == j && (found < 0 || j < found) && length(m.verts[j] - p) <= eps) found = j;
+                    });
+        rep[i] = found >= 0 ? found : (int)i;
+    }
+    std::vector<int> remap(n);
     std::vector<Vec3> kept;
     std::vector<BoneWeights> keptW;
     const bool w = m.hasWeights();
-    for (size_t i = 0; i < m.verts.size(); ++i) {
-        const Vec3 p = m.verts[i];
-        long long cx = (long long)std::floor(p.x * inv), cy = (long long)std::floor(p.y * inv),
-                  cz = (long long)std::floor(p.z * inv);
-        int found = -1;
-        for (int dx = -1; dx <= 1 && found < 0; ++dx)
-            for (int dy = -1; dy <= 1 && found < 0; ++dy)
-                for (int dz = -1; dz <= 1 && found < 0; ++dz) {
-                    auto it = grid.find(cellKey(cx + dx, cy + dy, cz + dz));
-                    if (it == grid.end()) continue;
-                    for (int k : it->second)
-                        if (length(kept[k] - p) <= eps) {
-                            found = k;
-                            break;
-                        }
-                }
-        if (found < 0) {
-            found = (int)kept.size();
-            kept.push_back(p);
+    for (size_t i = 0; i < n; ++i) {
+        if (rep[i] == (int)i) {
+            remap[i] = (int)kept.size();
+            kept.push_back(m.verts[i]);
             if (w) keptW.push_back(m.weights[i]);
-            grid[cellKey(cx, cy, cz)].push_back(found);
+        } else {
+            remap[i] = remap[rep[i]];
         }
-        remap[i] = found;
     }
-    int merged = (int)(m.verts.size() - kept.size());
+    int merged = (int)(n - kept.size());
     m.verts.swap(kept);
     if (w) m.weights.swap(keptW);
     for (auto& f : m.faces)
@@ -206,62 +253,66 @@ CleanupStats cleanup(Mesh& m, float eps) {
     compact();
 
     // 3. T-junctions: vertices lying on the interior of another face's edge.
-    //    A uniform grid over the vertices finds the candidates near each edge.
+    //    A uniform grid over the vertices (cells about one edge long) finds
+    //    the candidates near each edge.
     {
-        const float cell = std::max(size / 64.0f, eps * 8.0f);
-        auto cellOf = [&](Vec3 v) {
-            return std::make_tuple((int)std::floor(v.x / cell), (int)std::floor(v.y / cell), (int)std::floor(v.z / cell));
-        };
-        std::unordered_map<uint64_t, std::vector<int>> grid;
-        auto key = [](int x, int y, int z) {
-            return (uint64_t(uint32_t(x) & 0x1FFFFF) << 42) | (uint64_t(uint32_t(y) & 0x1FFFFF) << 21) |
-                   uint64_t(uint32_t(z) & 0x1FFFFF);
-        };
-        for (int v = 0; v < (int)m.verts.size(); ++v) {
-            auto [x, y, z] = cellOf(m.verts[v]);
-            grid[key(x, y, z)].push_back(v);
+        double sum = 0;
+        size_t count = 0;
+        for (size_t f = 0; f < m.faces.size() && count < 20000; f += 1 + m.faces.size() / 5000) {
+            const auto& fc = m.faces[f];
+            for (size_t i = 0; i < fc.size(); ++i, ++count) sum += length(m.verts[fc[i]] - m.verts[fc[(i + 1) % fc.size()]]);
         }
+        const float avgEdge = count ? (float)(sum / count) : size / 64.0f;
+        const float cell = std::max(std::min(avgEdge, size / 8.0f), eps * 8.0f);
+        PointGrid grid;
+        grid.build(m.verts, cell);
+        std::vector<std::pair<float, int>> onEdge;
+        std::vector<int> face;
+        std::vector<Vec2> fu;
         for (size_t f = 0; f < m.faces.size(); ++f) {
-            std::vector<int> face;
-            std::vector<Vec2> fu;
             const auto& src = m.faces[f];
             bool changed = false;
             for (size_t i = 0; i < src.size(); ++i) {
                 const int a = src[i], b = src[(i + 1) % src.size()];
-                face.push_back(a);
-                if (uvs) fu.push_back(m.uvs[f][i]);
                 const Vec3 pa = m.verts[a], pb = m.verts[b], ab = pb - pa;
                 const float len2 = dot(ab, ab);
-                if (len2 < eps * eps) continue;
-                auto [x0, y0, z0] = cellOf(vmin(pa, pb) - Vec3(eps, eps, eps));
-                auto [x1, y1, z1] = cellOf(vmax(pa, pb) + Vec3(eps, eps, eps));
-                if ((long long)(x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 20000) continue;  // absurdly long edge
-                std::vector<std::pair<float, int>> onEdge;
-                for (int x = x0; x <= x1; ++x)
-                    for (int y = y0; y <= y1; ++y)
-                        for (int z = z0; z <= z1; ++z) {
-                            auto it = grid.find(key(x, y, z));
-                            if (it == grid.end()) continue;
-                            for (int v : it->second) {
-                                if (v == a || v == b) continue;
-                                float t = dot(m.verts[v] - pa, ab) / len2;
-                                if (t <= 1e-4f || t >= 1.0f - 1e-4f) continue;
-                                if (length(pa + ab * t - m.verts[v]) <= eps * 4.0f) onEdge.push_back({t, v});
-                            }
-                        }
-                if (onEdge.empty()) continue;
+                onEdge.clear();
+                if (len2 >= eps * eps) {
+                    long long x0, y0, z0, x1, y1, z1;
+                    grid.coords(vmin(pa, pb) - Vec3(eps, eps, eps), x0, y0, z0);
+                    grid.coords(vmax(pa, pb) + Vec3(eps, eps, eps), x1, y1, z1);
+                    if ((x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) <= 20000)  // skip absurdly long edges
+                        for (long long x = x0; x <= x1; ++x)
+                            for (long long y = y0; y <= y1; ++y)
+                                for (long long z = z0; z <= z1; ++z)
+                                    grid.forCell(x, y, z, [&](int v) {
+                                        if (v == a || v == b) return;
+                                        float t = dot(m.verts[v] - pa, ab) / len2;
+                                        if (t <= 1e-4f || t >= 1.0f - 1e-4f) return;
+                                        if (length(pa + ab * t - m.verts[v]) <= eps * 4.0f) onEdge.push_back({t, v});
+                                    });
+                }
+                if (!onEdge.empty() && !changed) {
+                    // First T-junction of this face: copy the corners so far.
+                    changed = true;
+                    face.assign(src.begin(), src.begin() + i);
+                    fu.clear();
+                    if (uvs) fu.assign(m.uvs[f].begin(), m.uvs[f].begin() + i);
+                }
+                if (!changed) continue;
+                face.push_back(a);
+                if (uvs) fu.push_back(m.uvs[f][i]);
                 std::sort(onEdge.begin(), onEdge.end());
                 for (auto [t, v] : onEdge) {
                     if (face.back() == v) continue;
                     face.push_back(v);
                     if (uvs) fu.push_back(m.uvs[f][i] + (m.uvs[f][(i + 1) % src.size()] - m.uvs[f][i]) * t);
                     st.tJunctionsFixed++;
-                    changed = true;
                 }
             }
             if (changed) {
-                m.faces[f] = std::move(face);
-                if (uvs) m.uvs[f] = std::move(fu);
+                m.faces[f] = face;
+                if (uvs) m.uvs[f] = fu;
             }
         }
     }

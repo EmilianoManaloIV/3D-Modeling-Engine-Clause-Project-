@@ -22,6 +22,8 @@
 #include "uv.h"
 
 #include <deque>
+#include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -88,6 +90,11 @@ public:
     void requestQuit();
     bool shouldExit() const { return exit_; }
     void readPixels(int w, int h, std::vector<uint8_t>& rgb) { renderer_.readPixels(w, h, rgb); }
+    // Automation (scripts / stress tests).
+    bool runNamedCommand(const std::string& name, std::string& matched);  // like the command search
+    bool checkInvariants(std::string& error) const;  // scene, meshes, selection and camera are sane
+    std::string summary() const;                      // one line: mode, objects, active mesh size, status
+    const std::string& statusText() const { return status_; }
 
 private:
     enum class Mode { Object, Edit };
@@ -105,8 +112,12 @@ private:
         Vec3 scale{1, 1, 1};
         Mat4 basis;  // columns = scale axes
     };
+    // Undo snapshot. Meshes are shared between snapshots (and with the live
+    // scene's last saved state) by content stamp, so an edit only copies the
+    // meshes it changed - not every mesh in the scene.
     struct Snapshot {
-        std::vector<Object> objects;
+        std::vector<Object> objects;  // with empty meshes; the data is in `meshes`
+        std::vector<std::shared_ptr<const Mesh>> meshes;
         int active;
         std::vector<char> vsel;
         Vec3 ambient;
@@ -168,9 +179,22 @@ private:
     void extrudeEdit();
     void deleteEdit();
     void insetSelected(bool interactive);
+    // --- topology tools with an adjustable "last operation" (editor_meshtools.cpp) ---
+    enum class OpType { None, Inset, Bevel, LoopCut, Subdivide, Bridge, Push, Poke };
+    bool startMeshOp(OpType type, bool interactive);
     void applyLastOp();
     bool lastOpAdjustable();
-    bool updateInsetModal(const Input& in);
+    bool updateOpModal(const Input& in);
+    void lastOpPanel(PanelLayout& L);
+    void setEditResult(const std::vector<int>* faces, const std::vector<meshedit::Edge>* edges);
+    std::vector<meshedit::Edge> editEdgeList();  // selected edges in any select mode
+    void connectSelected();
+    void fillSelected();
+    void mergeSelected();
+    void selectLoop(bool ring);
+    void selectLinked();
+    void joinSelected();
+    static const char* opName(OpType t);
     const MeshAccel& meshAccel(const Object& o);
     void setMode(Mode m);
     void frameSelected();
@@ -205,7 +229,8 @@ private:
     std::vector<int> transformRoots();     // selected objects without a selected ancestor
 
     // --- undo (editor.cpp) ---
-    Snapshot snapshot() const;
+    Snapshot snapshot();
+    std::shared_ptr<const Mesh> shareMesh(const Mesh& m);
     void pushUndo();
     void beginEdit(uint32_t widgetId);
     void undo();
@@ -248,6 +273,37 @@ private:
     void boxSelect(Vec2 a, Vec2 b, bool extend, bool subtract);
     int pickVertex(Vec2 p);
     int pickIcon(Vec2 p);  // lights / bones / empties / emitters
+
+    // --- workspaces, top bar, menus, command palette (editor_workspace.cpp) ---
+    // The left panel follows the 3D pipeline: model -> texture -> rig ->
+    // light -> render. Each workspace shows only that stage's tools.
+    enum Workspace { WS_MODEL = 0, WS_TEXTURE, WS_RIG, WS_LIGHT, WS_RENDER, WS_COUNT };
+    void setWorkspace(int ws);
+    static const char* workspaceName(int ws);
+    void buildTopBar(const Input& in);
+    void buildFileMenu(const Input& in);
+    bool section(PanelLayout& L, const char* key, const std::string& title, bool defaultOpen = true);
+    struct Command {
+        std::string name;   // what the palette lists ("Bevel edges")
+        int workspace;      // -1 = anywhere
+        input::Action key;  // shortcut shown next to it (Action::Count = none)
+        std::function<void()> run;
+    };
+    void buildCommands();
+    void openPalette();
+    bool handlePalette(const Input& in);  // true = the palette owns the input this frame
+    void buildPalette();
+    std::vector<int> paletteMatches() const;
+    void runCommand(int index);
+    int navWidgetPick(Vec2 p) const;      // on-screen orbit / pan / zoom / frame (-1 none)
+    void navWidgetLayout(Rect out[4]) const;
+    void drawNavWidget();
+    void prefsPanel(PanelLayout& L, const Input& in);
+    void modelPanel(PanelLayout& L);
+    void texturePanel(PanelLayout& L);
+    void rigPanel(PanelLayout& L);
+    void lightPanel(PanelLayout& L);
+    void renderPanel(PanelLayout& L);
 
     // --- ui (editor_ui.cpp) ---
     void buildLeftPanel(const Input& in);
@@ -305,18 +361,33 @@ private:
     std::vector<meshedit::Edge> esel_;      // edge selection (edge mode), sorted
     uint64_t selTopology_ = 0;              // topology the edge / face selection belongs to
     uint32_t selObject_ = 0;
-    struct MeshOp {  // the last topology tool, re-run when its settings change
-        enum Type { None, Inset } type = None;
+    struct MeshOp {  // the last topology tool, re-run from `before` when its settings change
+        OpType type = OpType::None;
         uint32_t objectId = 0;
         Mesh before;
         std::vector<int> faces;
+        std::vector<meshedit::Edge> edges;
+        std::vector<char> verts;
         meshedit::InsetParams inset;
+        meshedit::BevelParams bevel;
+        meshedit::LoopCutParams loop;
+        int cuts = 1;
+        meshedit::BridgeParams bridge;
+        meshedit::PushParams push;
+        float poke = 0.0f;
         uint64_t resultVersion = 0;
+        std::string error;  // why the last run failed (shown in the panel)
+        std::string info;   // e.g. "width clamped to 0.48"
     } lastOp_;
     meshedit::InsetParams insetDefaults_;
-    bool insetModal_ = false;
-    Vec2 insetCenter_, insetStartMouse_;
-    float insetWorldPerPixel_ = 0.01f;
+    meshedit::BevelParams bevelDefaults_;
+    meshedit::PushParams pushDefaults_;
+    bool opModal_ = false;          // interactive inset / bevel / push (mouse or typed value)
+    std::string opTyped_;           // value typed during a modal op or transform
+    Vec2 opCenter_, opStartMouse_;
+    float opWorldPerPixel_ = 0.01f;
+    double lastEdgeClickTime_ = -1;
+    meshedit::Edge lastEdgeClick_{-1, -1};
     std::unordered_map<uint32_t, MeshAccel> meshAccel_;  // picking BVHs, per object
 
     // matrices & layout (recomputed every frame)
@@ -384,6 +455,10 @@ private:
         float transition = 0.3f;        // seconds for animated view changes (0 = instant)
         bool invertX = false, invertY = false;
         bool flyAcceleration = true;
+        // Trackpad navigation: two-finger scroll orbits, Shift+scroll pans,
+        // pinch / Ctrl+scroll zooms (instead of scroll = zoom).
+        bool trackpad = false;
+        bool navWidget = true;  // on-screen orbit / pan / zoom buttons
     } camSet_;
     // Rebindable keys (Keys tab).
     input::KeyMap keys_;
@@ -429,7 +504,21 @@ private:
     Vec2 uvDragLast_;
 
     // panels
-    int leftTab_ = 0;
+    int workspace_ = WS_MODEL;
+    bool prefsOpen_ = false;
+    int prefsTab_ = 0;  // 0 keys, 1 navigation, 2 interface
+    bool fileMenu_ = false;
+    Rect topBar_, fileMenuRect_, fileButtonRect_;
+    std::unordered_map<uint32_t, bool> sectionOpen_;
+    std::vector<Command> commands_;
+    bool paletteOpen_ = false;
+    std::string paletteQuery_;
+    int paletteSel_ = 0;
+    bool paletteMouseMoved_ = false;
+    bool navFromWidget_ = false;  // the current orbit / pan / zoom drag started on the nav buttons
+    int navHover_ = -1;
+    int uiScale_ = 0;  // 0 = automatic (from the display DPI), else 1..4
+    int lastWheelPan_ = 0;
     float leftScroll_ = 0, rightScroll_ = 0, outlinerScroll_ = 0;
     float leftContentH_ = 0, rightContentH_ = 0;
 
@@ -498,6 +587,7 @@ private:
 
     // undo
     std::deque<Snapshot> undo_, redo_;
+    std::unordered_map<uint64_t, std::weak_ptr<const Mesh>> meshPool_;  // content stamp -> stored copy
     uint32_t editGroup_ = 0;
 
     bool confirmQuit_ = false, exit_ = false;

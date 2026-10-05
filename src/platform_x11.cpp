@@ -61,6 +61,17 @@ int translateKeysym(KeySym ks) {
     if (ks >= XK_KP_0 && ks <= XK_KP_9) return '0' + (int)(ks - XK_KP_0);
     if (ks >= XK_F1 && ks <= XK_F12) return KEY_F1 + (int)(ks - XK_F1);
     switch (ks) {
+        case XK_minus: case XK_KP_Subtract: return '-';
+        case XK_equal: case XK_KP_Add: return '=';
+        case XK_slash: case XK_KP_Divide: return '/';
+        case XK_comma: return ',';
+        case XK_period: return '.';
+        case XK_semicolon: return ';';
+        case XK_apostrophe: return '\'';
+        case XK_grave: return '`';
+        case XK_bracketleft: return '[';
+        case XK_bracketright: return ']';
+        case XK_backslash: return '\\';
         // Keypad with NumLock off still maps to digits (view shortcuts).
         case XK_KP_Insert: return '0';
         case XK_KP_End: return '1';
@@ -249,8 +260,11 @@ void processEvents(Input& input) {
             }
             case ButtonPress:
                 input.onMouseMove((float)ev.xbutton.x, (float)ev.xbutton.y);
+                // Buttons 4-7: vertical and horizontal scroll (touchpads send both).
                 if (ev.xbutton.button == Button4) input.wheel += 1.0f;
                 else if (ev.xbutton.button == Button5) input.wheel -= 1.0f;
+                else if (ev.xbutton.button == 6) input.wheelX -= 1.0f;
+                else if (ev.xbutton.button == 7) input.wheelX += 1.0f;
                 else input.onMouseButton(translateButton(ev.xbutton.button), true);
                 break;
             case ButtonRelease:

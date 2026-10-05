@@ -160,6 +160,19 @@ void Editor::clickSelectEdit(Vec2 p, bool extend) {
             auto it = std::find(esel_.begin(), esel_.end(), e);
             if (it != esel_.end() && extend) esel_.erase(it);
             else if (it == esel_.end()) esel_.push_back(e);
+            // Double-click an edge: select its whole loop (Maya / 3ds Max style).
+            if (e == lastEdgeClick_ && clock_ - lastEdgeClickTime_ < 0.4) {
+                std::vector<meshedit::Edge> loop = meshedit::edgeLoop(o->mesh, e);
+                if (!extend) esel_.clear();
+                for (const auto& le : loop)
+                    if (std::find(esel_.begin(), esel_.end(), le) == esel_.end()) esel_.push_back(le);
+                std::sort(esel_.begin(), esel_.end());
+                lastEdgeClickTime_ = -1;
+                setStatus(strf("Edge loop: %d edges (double-click)", (int)loop.size()));
+            } else {
+                lastEdgeClick_ = e;
+                lastEdgeClickTime_ = clock_;
+            }
         }
     } else {
         int f = pickFace(p);
@@ -309,113 +322,10 @@ void Editor::deleteEdit() {
     }
     pushUndo();
     Mesh& m = o->mesh;
-    const bool uvs = m.hasUVs();
-    size_t w = 0;
-    for (size_t f = 0; f < m.faces.size(); ++f) {
-        if (kill[f]) continue;
-        m.faces[w] = std::move(m.faces[f]);
-        if (uvs) m.uvs[w] = std::move(m.uvs[f]);
-        ++w;
-    }
-    m.faces.resize(w);
-    if (uvs) m.uvs.resize(w);
-    removeUnusedVertices(m);
-    m.validate();
-    m.touch();
+    meshedit::deleteFaces(m, kill);
     vsel_.assign(m.verts.size(), 0);
     selectionFromVertices();
     markDirty();
     setStatus(strf("Deleted %d face(s)", count));
 }
 
-// ---------------------------------------------------------------------------
-// Inset: interactive (I), then adjustable in the Mesh tab
-// ---------------------------------------------------------------------------
-void Editor::insetSelected(bool interactive) {
-    if (mode_ != Mode::Edit) {
-        setStatus("Inset works in Edit mode (Tab)", true);
-        return;
-    }
-    Object* o = activeMesh();
-    if (!o) return;
-    std::vector<int> faces = editFaceList();
-    if (faces.empty()) {
-        setStatus("Select faces to inset", true);
-        return;
-    }
-    pushUndo();
-    lastOp_ = MeshOp();
-    lastOp_.type = MeshOp::Inset;
-    lastOp_.objectId = o->id;
-    lastOp_.before = o->mesh;
-    lastOp_.faces = faces;
-    lastOp_.inset = insetDefaults_;
-    if (interactive) {
-        lastOp_.inset.thickness = 0.0f;
-        lastOp_.inset.depth = 0.0f;
-        insetModal_ = true;
-        Vec2 c;
-        Vec3 centre;
-        for (int f : faces) centre += faceCenter(o->mesh, o->mesh.faces[f]);
-        centre = transformPoint(scene_.world(scene_.active), centre / (float)faces.size());
-        worldToScreen(centre, c);
-        insetCenter_ = c;
-        insetStartMouse_ = mouse_;
-        insetWorldPerPixel_ = worldPerPixel(centre);
-        setStatus("Inset: move the mouse towards the centre; hold Ctrl for depth. Click / Enter confirms, Esc cancels");
-    }
-    applyLastOp();
-}
-
-void Editor::applyLastOp() {
-    if (lastOp_.type == MeshOp::None) return;
-    int i = scene_.indexOf(lastOp_.objectId);
-    if (i < 0) return;
-    Object& o = scene_.objects[i];
-    o.mesh = lastOp_.before;
-    if (lastOp_.type == MeshOp::Inset) {
-        std::vector<int> inner;
-        meshedit::insetFaces(o.mesh, lastOp_.faces, lastOp_.inset, inner, vsel_);
-        selectionFromVertices();
-        std::fill(fsel_.begin(), fsel_.end(), 0);
-        for (int f : inner) fsel_[f] = 1;
-        if (selMode_ == SelMode::Edge) selMode_ = SelMode::Face;
-        if (selMode_ == SelMode::Face) verticesFromSelection();
-    }
-    lastOp_.resultVersion = o.mesh.version;
-    markDirty();
-}
-
-bool Editor::lastOpAdjustable() {
-    if (lastOp_.type == MeshOp::None || mode_ != Mode::Edit) return false;
-    int i = scene_.indexOf(lastOp_.objectId);
-    return i >= 0 && i == scene_.active && scene_.objects[i].mesh.version == lastOp_.resultVersion;
-}
-
-bool Editor::updateInsetModal(const Input& in) {
-    if (!insetModal_) return false;
-    if (in.pressed(KEY_ESCAPE) || in.mousePressed[MOUSE_RIGHT]) {
-        insetModal_ = false;
-        int i = scene_.indexOf(lastOp_.objectId);
-        if (i >= 0) scene_.objects[i].mesh = lastOp_.before;
-        if (!undo_.empty()) undo_.pop_back();
-        lastOp_ = MeshOp();
-        selectionFromVertices();
-        setStatus("Inset cancelled");
-        return true;
-    }
-    if (in.mousePressed[MOUSE_LEFT] || in.pressed(KEY_ENTER)) {
-        insetModal_ = false;
-        insetDefaults_.thickness = lastOp_.inset.thickness;
-        setStatus(strf("Inset %.3f, depth %.3f - fine-tune it in Mesh > Last operation", lastOp_.inset.thickness,
-                       lastOp_.inset.depth));
-        return true;
-    }
-    const float startDist = length(insetStartMouse_ - insetCenter_);
-    const float dist = length(mouse_ - insetCenter_);
-    const float amount = std::max(0.0f, (startDist - dist)) * insetWorldPerPixel_;
-    if (in.ctrl()) lastOp_.inset.depth = -(mouse_.y - insetStartMouse_.y) * insetWorldPerPixel_;  // up = outwards
-    else lastOp_.inset.thickness = amount;
-    applyLastOp();
-    return true;
-}

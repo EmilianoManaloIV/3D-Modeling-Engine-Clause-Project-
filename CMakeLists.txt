@@ -26,6 +26,7 @@ set(CORE_SOURCES
     src/csg.cpp
     src/expr.cpp
     src/meshedit.cpp
+    src/meshedit_tools.cpp
     src/image_load.cpp
     src/input_map.cpp
     src/bvh.cpp
@@ -41,6 +42,8 @@ set(APP_SOURCES
     src/editor_bench.cpp
     src/editor_meshops.cpp
     src/editor_editmode.cpp
+    src/editor_meshtools.cpp
+    src/editor_workspace.cpp
     src/editor_renderview.cpp
     src/gpu_tracer.cpp
     src/hwrt.cpp
@@ -48,7 +51,8 @@ set(APP_SOURCES
     src/ui.cpp
     src/font.cpp
     src/gl.cpp
-    src/image_io.cpp)
+    src/image_io.cpp
+    src/script.cpp)
 
 if(WIN32)
     list(APPEND APP_SOURCES src/platform_win32.cpp)

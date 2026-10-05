@@ -69,6 +69,17 @@ int translateKey(WPARAM vk) {
     if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return '0' + (int)(vk - VK_NUMPAD0);
     if (vk >= VK_F1 && vk <= VK_F12) return KEY_F1 + (int)(vk - VK_F1);
     switch (vk) {
+        case VK_OEM_MINUS: case VK_SUBTRACT: return '-';
+        case VK_OEM_PLUS: case VK_ADD: return '=';
+        case VK_OEM_2: case VK_DIVIDE: return '/';
+        case VK_OEM_COMMA: return ',';
+        case VK_OEM_PERIOD: return '.';
+        case VK_OEM_1: return ';';
+        case VK_OEM_7: return '\'';
+        case VK_OEM_3: return '`';
+        case VK_OEM_4: return '[';
+        case VK_OEM_6: return ']';
+        case VK_OEM_5: return '\\';
         case VK_SPACE: return KEY_SPACE;
         case VK_ESCAPE: return KEY_ESCAPE;
         case VK_RETURN: return KEY_ENTER;
@@ -159,7 +170,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_MOUSEWHEEL:
-            if (g_input) g_input->wheel += (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+            // Precision touchpads send fractional notches; a pinch arrives as
+            // Ctrl+wheel without a real Ctrl key press.
+            if (g_input) {
+                g_input->wheel += (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+                if ((GET_KEYSTATE_WPARAM(wp) & MK_CONTROL) && !(GetKeyState(VK_CONTROL) & 0x8000)) g_input->pinch = true;
+            }
+            return 0;
+        case WM_MOUSEHWHEEL:
+            if (g_input) g_input->wheelX += (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
             return 0;
         default:
             break;

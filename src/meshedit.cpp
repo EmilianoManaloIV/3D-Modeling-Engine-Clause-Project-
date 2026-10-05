@@ -1,4 +1,4 @@
-#include "meshedit.h"
+#include "meshedit_internal.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,17 +6,8 @@
 #include <unordered_set>
 
 namespace meshedit {
-namespace {
+namespace detail {
 
-inline uint64_t directedKey(int a, int b) { return (uint64_t(uint32_t(a)) << 32) | uint32_t(b); }
-
-// Linear map from positions in a face's plane to its UVs, from the face's
-// first corner and the two edges spanning the largest area.
-struct UvMap {
-    bool ok = false;
-    Vec3 du, dv;  // uv change per unit of world offset (gradients)
-    Vec2 apply(Vec2 uv, Vec3 offset) const { return ok ? uv + Vec2(dot(du, offset), dot(dv, offset)) : uv; }
-};
 UvMap uvMapFor(const Mesh& m, int f) {
     UvMap map;
     if (!m.hasUVs()) return map;
@@ -47,7 +38,40 @@ UvMap uvMapFor(const Mesh& m, int f) {
     return map;
 }
 
-}  // namespace
+BoneWeights blendWeights(const BoneWeights& a, const BoneWeights& b, float t) {
+    BoneWeights r;
+    for (int k = 0; k < 4; ++k) {
+        if (a.bone[k] >= 0) r.add(a.bone[k], a.w[k] * (1.0f - t));
+        if (b.bone[k] >= 0) r.add(b.bone[k], b.w[k] * t);
+    }
+    r.normalize();
+    return r;
+}
+
+HalfEdges::HalfEdges(const Mesh& mesh) : m(&mesh) {
+    const size_t nf = mesh.faces.size();
+    start.resize(nf + 1);
+    int total = 0;
+    for (size_t f = 0; f < nf; ++f) {
+        start[f] = total;
+        total += (int)mesh.faces[f].size();
+    }
+    start[nf] = total;
+    faceOf.resize(total);
+    byDirected.reserve((size_t)total);
+    for (size_t f = 0; f < nf; ++f) {
+        const auto& face = mesh.faces[f];
+        for (size_t i = 0; i < face.size(); ++i) {
+            const int h = start[f] + (int)i;
+            faceOf[h] = (int)f;
+            byDirected.emplace(directedKey(face[i], face[(i + 1) % face.size()]), h);  // first wins
+        }
+    }
+}
+
+}  // namespace detail
+
+using namespace detail;
 
 Edge makeEdge(int a, int b) { return a < b ? Edge(a, b) : Edge(b, a); }
 

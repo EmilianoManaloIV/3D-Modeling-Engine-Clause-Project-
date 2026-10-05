@@ -92,6 +92,8 @@ public:
     // Returns true when the user commits an edit (Enter or clicking away).
     bool textField(uint32_t id, const Rect& r, std::string& value);
     void header(const Rect& r, const std::string& label);
+    // Collapsible section header: draws "+"/"-", returns true when clicked.
+    bool foldHeader(uint32_t id, const Rect& r, const std::string& label, bool open);
 
     bool hovered(const Rect& r) const;
     bool isActive() const { return activeId_ != 0; }
