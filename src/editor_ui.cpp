@@ -1,9 +1,11 @@
 #include "editor_internal.h"
+#include "jobs.h"
 #include "profiler.h"
 #include "skin.h"
 #include "transform.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <functional>
 
@@ -69,7 +71,42 @@ bool Editor::floatRow(PanelLayout& L, const char* text, const char* key, uint32_
 // ============================================================================
 // Left panel: tabbed tools
 // ============================================================================
+void Editor::processKeyCapture(const Input& in) {
+    if (captureAction_ < 0) return;
+    if (leftTab_ != 7) {
+        captureAction_ = -1;
+        return;
+    }
+    for (int k = 1; k < KEY_COUNT; ++k) {
+        if (!in.keyPressed[k] || k == KEY_SHIFT || k == KEY_CONTROL || k == KEY_ALT) continue;
+        const input::Action a = (input::Action)captureAction_;
+        swallowKeys_ = true;
+        if (k == KEY_ESCAPE) {
+            setStatus("Key binding unchanged");
+        } else if (k == KEY_BACKSPACE) {
+            keys_.slots[captureAction_][captureSlot_] = input::Binding();
+            setStatus(std::string("Cleared a binding of \"") + input::info(a).label + "\"");
+            saveConfig();
+        } else {
+            input::Binding b;
+            b.key = k;
+            b.ctrl = in.ctrl();
+            b.shift = in.shift();
+            b.alt = in.alt();
+            if (input::info(a).held) b.ctrl = b.shift = b.alt = false;  // movement keys: Shift = boost
+            input::Action lost = keys_.assign(a, captureSlot_, b);
+            std::string msg = std::string("\"") + input::info(a).label + "\" = " + input::toString(b);
+            if (lost != input::Action::Count) msg += std::string("  (removed from \"") + input::info(lost).label + "\")";
+            setStatus(msg);
+            saveConfig();
+        }
+        captureAction_ = -1;
+        return;
+    }
+}
+
 void Editor::buildLeftPanel(const Input& in) {
+    processKeyCapture(in);
     const float fs = (float)fontScale_;
     const float pad = 5 * fs, gap = 3 * fs, rowH = ui_.rowHeight(), headerH = 11 * fs;
     ui_.rect(leftPanel_, theme::panel);
@@ -88,8 +125,8 @@ void Editor::buildLeftPanel(const Input& in) {
     Rect title = L.row(rowH);
     ui_.text(title.x, title.y + (rowH - ui_.glyphH()) * 0.5f, "MODELER 3D", theme::accent);
 
-    static const char* const kTabs[6] = {"Create", "Mesh", "UV", "Rig", "FX", "File"};
-    for (int r = 0; r < 2; ++r) {
+    static const char* const kTabs[9] = {"Create", "Mesh", "UV", "Rig", "FX", "Render", "File", "Keys", "Camera"};
+    for (int r = 0; r < 3; ++r) {
         Rect row = L.row(rowH);
         for (int c = 0; c < 3; ++c) {
             int t = r * 3 + c;
@@ -157,6 +194,23 @@ void Editor::buildLeftPanel(const Input& in) {
             row = L.row(rowH);
             if (btn("mesh.flat", cell(row, 0, 2, gap), "Flat")) setSmoothSelected(false);
             if (btn("mesh.smooth", cell(row, 1, 2, gap), "Smooth")) setSmoothSelected(true);
+            header("BOOLEAN");
+            row = L.row(rowH);
+            if (btn("csg.union", cell(row, 0, 3, gap), "Union")) booleanSelected(csg::Op::Union);
+            if (btn("csg.diff", cell(row, 1, 3, gap), "Diff")) booleanSelected(csg::Op::Difference);
+            if (btn("csg.inter", cell(row, 2, 3, gap), "Inter")) booleanSelected(csg::Op::Intersection);
+            row = L.row(rowH);
+            if (btn("csg.tris", cell(row, 0, 2, gap), "Tris out", csgTriangulate_)) csgTriangulate_ = !csgTriangulate_;
+            if (btn("csg.keep", cell(row, 1, 2, gap), "Keep cut", csgKeepCutters_)) csgKeepCutters_ = !csgKeepCutters_;
+            note("Select cutters, then");
+            note("the target last.");
+            header("N-GON SOLVER");
+            row = L.row(rowH);
+            if (btn("ngon.tri", cell(row, 0, 2, gap), "Ngon>Tri")) meshCleanupSelected(0);
+            if (btn("ngon.all", cell(row, 1, 2, gap), "All>Tris")) meshCleanupSelected(1);
+            row = L.row(rowH);
+            if (btn("ngon.clean", cell(row, 0, 2, gap), "Clean up")) meshCleanupSelected(2);
+            if (btn("ngon.quads", cell(row, 1, 2, gap), "Tri>Quad")) meshCleanupSelected(3);
             header("VIEW");
             row = L.row(rowH);
             if (btn("view.front", cell(row, 0, 3, gap), "Front")) setView(0, 0);
@@ -268,7 +322,77 @@ void Editor::buildLeftPanel(const Input& in) {
             note("a mesh's Properties.");
             break;
         }
-        default: {  // File
+        case 5: {  // Render
+            header("PATH TRACER  (F5)");
+            Rect row = L.row(rowH);
+            if (btn("rt.gpu", cell(row, 0, 2, gap), "GPU", renderSet_.gpu && gpuTracerOk_)) {
+                if (gpuTracerOk_) renderSet_.gpu = true;
+                else setStatus("GPU tracer unavailable: " + gpuTracerError_, true);
+            }
+            if (btn("rt.cpu", cell(row, 1, 2, gap), "CPU", !renderSet_.gpu || !gpuTracerOk_)) renderSet_.gpu = false;
+            row = L.row(rowH);
+            if (btn("rt.render", cell(row, 0, 2, gap), renderView_ ? "Close" : "Render", renderView_)) toggleRenderView();
+            if (btn("rt.save", cell(row, 1, 2, gap), "Save PNG")) {
+                std::string base = fileField_;
+                size_t dot = base.find_last_of('.');
+                size_t slash = base.find_last_of("/\\");
+                if (dot != std::string::npos && (slash == std::string::npos || slash < dot)) base = base.substr(0, dot);
+                saveRender(base + "_render.png");
+            }
+            if (renderView_) {
+                const int spp = renderSamples();
+                const double secs = renderGpu_ ? gpuTracer_.elapsedSeconds() : cpuRender_.elapsedSeconds();
+                const double rate = renderGpu_ ? gpuTracer_.samplesPerSecond() : cpuRender_.samplesPerSecond();
+                Rect bar = L.row(rowH * 0.6f);
+                ui_.rect(bar, theme::field);
+                float k = clampf((float)spp / std::max(1.0f, renderSet_.samples), 0.0f, 1.0f);
+                ui_.rect({bar.x, bar.y, bar.w * k, bar.h}, theme::accent);
+                label(L, strf("%d / %d spp  %.1fs", spp, (int)renderSet_.samples, secs),
+                      renderRunning() ? theme::text : theme::white);
+                label(L, strf("%.2f Msamples/s", rate * 1e-6), theme::textDim);
+                if (rtScene_)
+                    label(L, strf("%d tris, BVH %.0f ms", (int)rtScene_->triangleCount(), rtScene_->buildMs),
+                          theme::textDim);
+            }
+            header("SAMPLING");
+            auto setRow = [&](const char* text, const char* key, float& v, float speed, float lo, float hi,
+                              bool integer) {
+                Rect r = L.row(rowH);
+                float lw = std::floor(r.w * 0.52f);
+                ui_.textIn({r.x, r.y, lw, r.h}, text, theme::textDim, false);
+                float value = v;
+                if (ui_.dragFloat(uiHash(key), {r.x + lw, r.y, r.w - lw, r.h}, value, speed, theme::accent, lo, hi)) {
+                    v = integer ? std::round(value) : value;
+                    return true;
+                }
+                return false;
+            };
+            setRow("Samples", "rt.spp", renderSet_.samples, 1.0f, 1.0f, 65536.0f, true);
+            row = L.row(rowH);
+            static const int kSpp[4] = {16, 64, 256, 1024};
+            for (int c = 0; c < 4; ++c)
+                if (ui_.button(uiHash("rt.sppq", (uint32_t)c), cell(row, c, 4, gap), std::to_string(kSpp[c]),
+                               (int)renderSet_.samples == kSpp[c]))
+                    renderSet_.samples = (float)kSpp[c];
+            setRow("Bounces", "rt.bounce", renderSet_.bounces, 0.05f, 0.0f, 32.0f, true);
+            setRow("Res. %", "rt.res", renderSet_.resolution, 0.5f, 5.0f, 200.0f, true);
+            setRow("Clamp", "rt.clamp", renderSet_.clamp, 0.05f, 0.0f, 1000.0f, false);
+            setRow("Sky", "rt.env", renderSet_.envStrength, 0.01f, 0.0f, 50.0f, false);
+            setRow("Soft shad.", "rt.lsize", renderSet_.lightSize, 0.002f, 0.0f, 2.0f, false);
+            row = L.row(rowH);
+            if (btn("rt.studio", cell(row, 0, 2, gap), "Studio", renderSet_.studioLights))
+                renderSet_.studioLights = !renderSet_.studioLights;
+            if (btn("rt.auto", cell(row, 1, 2, gap), "Live", renderAutoUpdate_)) renderAutoUpdate_ = !renderAutoUpdate_;
+            header("DEVICES");
+            setRow("GPU ms", "rt.budget", renderSet_.gpuBudgetMs, 0.1f, 1.0f, 200.0f, false);
+            setRow("Threads", "rt.threads", renderSet_.cpuThreads, 0.05f, 0.0f, 256.0f, true);
+            note(renderSet_.cpuThreads < 1 ? strf("(0 = all %d threads)", jobs::hardwareThreads()).c_str()
+                                           : strf("of %d hw threads", jobs::hardwareThreads()).c_str());
+            for (const std::string& line : gpuReport()) label(L, line, softwareGl_ ? theme::error : theme::textDim);
+            note("F3 = live GPU/CPU stats.");
+            break;
+        }
+        case 6: {  // File
             header("FILE");
             ui_.textField(uiHash("file.name"), L.row(rowH), fileField_);
             Rect row = L.row(rowH);
@@ -283,15 +407,109 @@ void Editor::buildLeftPanel(const Input& in) {
             row = L.row(rowH);
             if (btn("undo", cell(row, 0, 2, gap), "Undo")) undo();
             if (btn("redo", cell(row, 1, 2, gap), "Redo")) redo();
-            header("KEYMAP");
+            header("SETTINGS");
             row = L.row(rowH);
-            if (btn("keys.unity", cell(row, 0, 2, gap), "Unity", keymap_ == Keymap::Unity)) setKeymap(Keymap::Unity);
-            if (btn("keys.blender", cell(row, 1, 2, gap), "Blender", keymap_ == Keymap::Blender))
-                setKeymap(Keymap::Blender);
+            if (btn("file.keys", cell(row, 0, 2, gap), "Keys...")) leftTab_ = 7;
+            if (btn("file.cam", cell(row, 1, 2, gap), "Camera...")) leftTab_ = 8;
             header("HELP");
             row = L.row(rowH);
             if (btn("help", cell(row, 0, 2, gap), "Keys (F1)", showHelp_)) showHelp_ = true;
             if (btn("shot", cell(row, 1, 2, gap), "Shot F12")) screenshotPending_ = true;
+            break;
+        }
+        case 7: {  // Keys
+            header("PRESET");
+            Rect row = L.row(rowH);
+            if (btn("keys.unity", cell(row, 0, 2, gap), "Unity", keymap_ == Keymap::Unity)) setKeymap(Keymap::Unity);
+            if (btn("keys.blender", cell(row, 1, 2, gap), "Blender", keymap_ == Keymap::Blender))
+                setKeymap(Keymap::Blender);
+            note("Click a slot, press keys.");
+            note("Esc cancel, Bksp clear.");
+            {
+                Rect fr = L.row(rowH);
+                float lw = std::floor(fr.w * 0.3f);
+                ui_.textIn({fr.x, fr.y, lw, fr.h}, "Find", theme::textDim, false);
+                ui_.textField(uiHash("keys.filter"), {fr.x + lw, fr.y, fr.w - lw, fr.h}, keysFilter_);
+            }
+            const char* const kContextNames[3] = {"SHORTCUTS", "FLY (RMB HELD)", "TRANSFORM (MODAL)"};
+            int lastContext = -1;
+            std::string filter = keysFilter_;
+            for (char& ch : filter) ch = (char)std::tolower((unsigned char)ch);
+            for (int a = 0; a < input::kActionCount; ++a) {
+                const input::ActionInfo& info = input::info((input::Action)a);
+                if (!filter.empty()) {
+                    std::string lbl = info.label;
+                    for (char& ch : lbl) ch = (char)std::tolower((unsigned char)ch);
+                    if (lbl.find(filter) == std::string::npos) continue;
+                }
+                if ((int)info.context != lastContext) {
+                    lastContext = (int)info.context;
+                    header(kContextNames[lastContext]);
+                }
+                Rect r = L.row(rowH);
+                float lw = std::floor(r.w * 0.47f), sw = std::floor((r.w - lw - gap) * 0.5f);
+                ui_.textIn({r.x, r.y, lw, r.h}, ui_.fitText(info.label, lw), theme::textDim, false);
+                for (int slot = 0; slot < 2; ++slot) {
+                    Rect sr{r.x + lw + slot * (sw + gap), r.y, slot == 0 ? sw : r.w - lw - sw - gap, r.h};
+                    const bool capturing = captureAction_ == a && captureSlot_ == slot;
+                    std::string text = capturing ? "press..." : input::toString(keys_.slots[a][slot]);
+                    if (ui_.button(uiHash("keys.slot", (uint32_t)(a * 2 + slot)), sr, ui_.fitText(text, sr.w - 2),
+                                   capturing)) {
+                        if (capturing) {
+                            captureAction_ = -1;
+                        } else {
+                            captureAction_ = a;
+                            captureSlot_ = slot;
+                            setStatus(std::string("Press a key (with Ctrl/Shift/Alt) for \"") + info.label +
+                                      "\" - Esc cancels, Backspace clears");
+                        }
+                    }
+                }
+            }
+            header("RESET");
+            row = L.row(rowH);
+            if (btn("keys.reset", row, "Reset to preset")) setKeymap(keymap_);
+            break;
+        }
+        case 8: {  // Camera
+            auto setRow = [&](const char* text, const char* key, float& v, float speed, float lo, float hi) {
+                Rect r = L.row(rowH);
+                float lw = std::floor(r.w * 0.52f);
+                ui_.textIn({r.x, r.y, lw, r.h}, text, theme::textDim, false);
+                float value = v;
+                if (ui_.dragFloat(uiHash(key), {r.x + lw, r.y, r.w - lw, r.h}, value, speed, theme::accent, lo, hi)) {
+                    v = value;
+                    configDirty_ = true;
+                }
+            };
+            CameraSettings& c = camSet_;
+            header("LOOK AROUND");
+            setRow("Orbit", "camset.orbit", c.orbitSensitivity, 0.002f, 0.01f, 5.0f);
+            setRow("Mouse look", "camset.look", c.lookSensitivity, 0.002f, 0.01f, 5.0f);
+            Rect row = L.row(rowH);
+            if (btn("camset.invx", cell(row, 0, 2, gap), "Invert X", c.invertX)) c.invertX = !c.invertX, configDirty_ = true;
+            if (btn("camset.invy", cell(row, 1, 2, gap), "Invert Y", c.invertY)) c.invertY = !c.invertY, configDirty_ = true;
+            header("MOVE");
+            setRow("Pan speed", "camset.pan", c.panSpeed, 0.01f, 0.05f, 20.0f);
+            setRow("Zoom speed", "camset.zoom", c.zoomSpeed, 0.01f, 0.05f, 20.0f);
+            setRow("Fly speed", "camset.fly", flySpeed_, 0.01f, 0.01f, 100.0f);
+            setRow("Arrow keys", "camset.arrow", c.arrowSpeed, 0.01f, 0.05f, 20.0f);
+            setRow("Shift x", "camset.fast", c.fastMultiplier, 0.02f, 1.0f, 20.0f);
+            row = L.row(rowH);
+            if (btn("camset.accel", row, "Fly acceleration", c.flyAcceleration))
+                c.flyAcceleration = !c.flyAcceleration, configDirty_ = true;
+            header("VIEW");
+            setRow("FOV", "camset.fov", cam_.fovY, 0.2f, 10.0f, 120.0f);
+            setRow("Transition", "camset.trans", c.transition, 0.005f, 0.0f, 3.0f);
+            row = L.row(rowH);
+            if (btn("camset.reset", row, "Reset camera")) {
+                c = CameraSettings();
+                flySpeed_ = 1.0f;
+                cam_.fovY = 50.0f;
+                configDirty_ = true;
+                setStatus("Camera settings reset");
+            }
+            note("Saved to Modeler3D.cfg");
             break;
         }
     }
@@ -365,7 +583,8 @@ void Editor::buildRightPanel(const Input& in) {
     ui_.popClip();
     if (clicked >= 0) {
         const uint32_t cid = scene_.objects[clicked].id;
-        const bool doubleClick = cid == lastOutlinerClickId_ && clock_ - lastOutlinerClickTime_ < 0.4;
+        const bool doubleClick = cid == lastOutlinerClickId_ && clock_ - lastOutlinerClickTime_ < 0.4 &&
+                                 !in.ctrl() && !in.shift();
         lastOutlinerClickId_ = cid;
         lastOutlinerClickTime_ = doubleClick ? -1.0 : clock_;
         if (doubleClick && mode_ == Mode::Object) {
@@ -382,14 +601,33 @@ void Editor::buildRightPanel(const Input& in) {
                 if (makeEditable(scene_.objects[clicked])) markDirty();
             }
         } else if (in.shift()) {
-            toggleSelect(clicked);
+            // Shift+click: select the range of rows from the anchor (the last
+            // plain / Ctrl click) to here; Ctrl+Shift adds the range.
+            int from = -1, to = -1;
+            for (int k = 0; k < (int)rows.size(); ++k) {
+                if (rows[k].first == clicked) to = k;
+                if (scene_.objects[rows[k].first].id == outlinerAnchorId_) from = k;
+            }
+            if (from < 0) from = to;
+            if (!in.ctrl())
+                for (Object& o : scene_.objects) o.selected = false;
+            for (int k = std::min(from, to); k <= std::max(from, to); ++k) scene_.objects[rows[k].first].selected = true;
+            scene_.active = clicked;
+            setStatus(strf("%d objects selected", scene_.selectedCount()));
+        } else if (in.ctrl()) {
+            toggleSelect(clicked);  // Ctrl+click: add / remove one object
+            outlinerAnchorId_ = scene_.objects[clicked].id;
+            setStatus(strf("%d objects selected", scene_.selectedCount()));
         } else {
             selectOnly(clicked);
+            outlinerAnchorId_ = scene_.objects[clicked].id;
         }
     }
 
     // --- Properties ---
     ui_.header(L.row(headerH), "PROPERTIES");
+    if (scene_.selectedCount() > 1)
+        label(L, strf("%d selected (Ctrl/Shift+click)", scene_.selectedCount()), theme::accent);
     if (Object* o = active()) {
         objectProperties(L, *o, in);
     } else {
@@ -845,7 +1083,7 @@ void Editor::buildHelp() {
         {"RMB + W A S D Q E", "Fly (accelerates; Shift faster)"},
         {"  wheel while flying", "Change fly speed"},
         {"Arrow keys", "Move the camera; wheel zooms"},
-        {"Scene gizmo (top right)", "Click an axis: view along it; label: Persp/Iso"},
+        {"Scene gizmo (corner)", "Click an axis: view along it; label: Persp/Iso"},
         {"F / double-click list", "Frame selection (animated)"},
         {"Click / drag", "Select / box (Shift or Ctrl adds)"},
         {"Ctrl+D / Delete", "Duplicate / delete"},
@@ -873,6 +1111,9 @@ void Editor::buildHelp() {
         {"Ctrl+Z / Ctrl+Y", "Undo / redo"},
         {"Ctrl+S / Ctrl+O", "Save / load the scene named in File"},
         {"F3 / F12 / F1", "Stats / screenshot / this help"},
+        {"F5", "Path-traced render (Render tab)"},
+        {"Ctrl/Shift+click list", "Multi-select: toggle / range"},
+        {"Keys / Camera tabs", "Rebind keys (defaults shown) / look"},
     };
     std::vector<std::pair<const char*, const char*>> rows;
     if (keymap_ == Keymap::Unity)
@@ -947,6 +1188,9 @@ void Editor::buildViewportToolbar() {
         pivotCenter_ = !pivotCenter_;
         setStatus(pivotCenter_ ? "Handle position: Center" : "Handle position: Pivot");
     }
+    y += h + gap + 3 * fs;
+    // Path-traced view toggle (F5 by default; settings in the Render tab).
+    if (ui_.button(uiHash("tool.render"), {x, y, w, h}, "Render", renderView_)) toggleRenderView();
     y += h;
     toolbarRect_ = {x, top, w, y - top};
 }
@@ -967,6 +1211,7 @@ void Editor::buildStatsOverlay() {
     }
     for (const auto& c : prof::counters())
         if (c.avg > 0) lines.push_back(strf("%-22.22s %6.0f", c.name, c.avg));
+    for (const std::string& l : gpuReport()) lines.push_back(l);
     const float lineH = 9 * fs, w = 30 * 6 * fs + 8 * fs, h = lines.size() * lineH + 8 * fs;
     Rect box{viewport_.x + viewport_.w - w - 6 * fs, sceneGizmoRect_.y + sceneGizmoRect_.h + 4 * fs, w, h};
     ui_.rect(box, withAlpha(theme::panelDark, 0.88f));

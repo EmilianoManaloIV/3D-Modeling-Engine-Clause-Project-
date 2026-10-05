@@ -21,6 +21,7 @@ typedef float GLfloat;
 typedef char GLchar;
 typedef unsigned char GLubyte;
 typedef std::ptrdiff_t GLsizeiptr;
+typedef unsigned long long GLuint64;
 
 #define GL_FALSE 0
 #define GL_TRUE 1
@@ -46,6 +47,13 @@ typedef std::ptrdiff_t GLsizeiptr;
 #define GL_FLOAT 0x1406
 #define GL_RED 0x1903
 #define GL_RGB 0x1907
+#define GL_RGBA 0x1908
+#define GL_MAX_TEXTURE_SIZE 0x0D33
+#define GL_RGBA8 0x8058
+#define GL_RGBA32F 0x8814
+#define GL_TIME_ELAPSED 0x88BF
+#define GL_QUERY_RESULT 0x8866
+#define GL_QUERY_RESULT_AVAILABLE 0x8867
 #define GL_VENDOR 0x1F00
 #define GL_RENDERER 0x1F01
 #define GL_VERSION 0x1F02
@@ -102,6 +110,15 @@ typedef std::ptrdiff_t GLsizeiptr;
     X(void, ActiveTexture, (GLenum texture))                                                                 \
     X(void, TexImage2D, (GLenum target, GLint level, GLint internalformat, GLsizei w, GLsizei h, GLint border, \
                          GLenum format, GLenum type, const void* pixels))                                    \
+    X(void, TexSubImage2D, (GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, \
+                            GLenum type, const void* pixels))                                                \
+    X(void, GetIntegerv, (GLenum pname, GLint * data))                                                       \
+    X(void, GenQueries, (GLsizei n, GLuint * ids))                                                           \
+    X(void, DeleteQueries, (GLsizei n, const GLuint* ids))                                                   \
+    X(void, BeginQuery, (GLenum target, GLuint id))                                                          \
+    X(void, EndQuery, (GLenum target))                                                                       \
+    X(void, GetQueryObjectiv, (GLuint id, GLenum pname, GLint * params))                                     \
+    X(void, GetQueryObjectui64v, (GLuint id, GLenum pname, GLuint64 * params))                               \
     X(void, TexParameteri, (GLenum target, GLenum pname, GLint param))                                       \
     X(void, GenerateMipmap, (GLenum target))                                                                 \
     X(void, GenFramebuffers, (GLsizei n, GLuint * framebuffers))                                             \
@@ -137,6 +154,7 @@ typedef std::ptrdiff_t GLsizeiptr;
     X(void, UseProgram, (GLuint program))                                                                    \
     X(GLint, GetUniformLocation, (GLuint program, const GLchar* name))                                       \
     X(void, Uniform1i, (GLint location, GLint v0))                                                           \
+    X(void, Uniform1ui, (GLint location, GLuint v0))                                                         \
     X(void, Uniform1f, (GLint location, GLfloat v0))                                                         \
     X(void, Uniform2f, (GLint location, GLfloat v0, GLfloat v1))                                             \
     X(void, Uniform2i, (GLint location, GLint v0, GLint v1))                                                 \

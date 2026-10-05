@@ -1,4 +1,6 @@
 #include "editor_internal.h"
+#include "polygon.h"
+#include "csg.h"
 #include "skin.h"
 
 #include <algorithm>
@@ -387,8 +389,8 @@ void Editor::animateCameraTo(const Camera& goal) {
 
 void Editor::updateCameraAnimation(float dt) {
     if (!camAnimating_) return;
-    const float duration = 0.3f;
-    camAnimT_ = std::min(1.0f, camAnimT_ + dt / duration);
+    const float duration = camSet_.transition;
+    camAnimT_ = duration <= 0.0f ? 1.0f : std::min(1.0f, camAnimT_ + dt / duration);
     float t = camAnimT_ * camAnimT_ * (3.0f - 2.0f * camAnimT_);  // smoothstep easing
     cam_.target = lerp(camFrom_.target, camTo_.target, t);
     cam_.distance = camFrom_.distance + (camTo_.distance - camFrom_.distance) * t;
@@ -861,6 +863,54 @@ void Editor::buildDemo(int which) {
             cam_.distance = 9;
             cam_.yaw = 10;
             cam_.pitch = 12;
+            break;
+        }
+        case 5: {  // booleans: union / difference / intersection results, plus a pair to try
+            int ground = shape(PS_Plane, "Ground", 8, {0, -0.01f, 0});
+            setParam(ground, {40, 30, 1, 1});
+            struct Pair {
+                const char* name;
+                csg::Op op;
+                float x;
+                int color;
+            } pairs[3] = {{"Union", csg::Op::Union, -4.2f, 1},
+                          {"Difference", csg::Op::Difference, 0.0f, 3},
+                          {"Intersection", csg::Op::Intersection, 4.2f, 6}};
+            for (const Pair& p : pairs) {
+                Mesh box = primitives::box(2.0f, 2.0f, 2.0f, 1);
+                Mesh ball = primitives::uvSphere(1.3f, 48, 24);
+                for (Vec3& v : box.verts) v.y += 1.0f;
+                for (Vec3& v : ball.verts) v += Vec3(0.0f, 1.0f, 0.0f);
+                box.touch();
+                ball.touch();
+                csg::Result r = csg::apply(box, ball, p.op);
+                poly::cleanup(r.mesh);
+                poly::triangulateMesh(r.mesh, 4);
+                Object o;
+                o.name = p.name;
+                o.mesh = std::move(r.mesh);
+                o.color = kPalette[p.color];
+                o.position = {p.x, 0, 0};
+                o.gloss = 0.6f;
+                scene_.addObject(std::move(o));
+            }
+            // An unapplied pair: select "Cutter", Ctrl+click "Block", press Diff.
+            int block = shape(PS_Cube, "Block", 9, {-1.6f, 0.75f, -3.6f});
+            setParam(block, {3.0f, 1.5f, 1.5f, 1});
+            int cutter = shape(PS_Cylinder, "Cutter", 0, {-1.6f, 0.75f, -3.6f}, {90, 0, 0});
+            setParam(cutter, {0.55f, 2.4f, 32});
+            int gear = shape(PS_Gear, "Gear", 4, {2.8f, 0.2f, -3.6f});
+            (void)gear;
+            light(LightType::Sun, "Sun", {-2, 7, 2}, {-50, 30, 0}, {1.0f, 0.96f, 0.9f}, 1.6f);
+            light(LightType::Point, "Fill", {4, 3, 4}, {}, {0.6f, 0.75f, 1.0f}, 12);
+            scene_.ambient = {0.06f, 0.065f, 0.08f};
+            selectOnly(cutter);
+            scene_.objects[block].selected = false;
+            shading_ = SHADE_LIT;
+            cam_.target = {0, 0.6f, -1.4f};
+            cam_.distance = 17.0f;
+            cam_.yaw = 0;
+            cam_.pitch = 28;
             break;
         }
         default: {  // default scene: a cube and a light, like most modelers

@@ -170,6 +170,10 @@ void Editor::appendGizmos(std::vector<LineVertex>& lines, std::vector<ParticleVe
 void Editor::renderViewport() {
     const int vx = (int)viewport_.x, vy = (int)(screenH_ - (viewport_.y + viewport_.h));
     renderer_.beginViewport(vx, vy, (int)viewport_.w, (int)viewport_.h, kViewportBg);
+    if (renderView_) {  // path-traced image instead of the raster preview
+        presentRender(vx, vy, (int)viewport_.w, (int)viewport_.h);
+        return;
+    }
 
     FrameParams f;
     f.viewProj = viewProj_;

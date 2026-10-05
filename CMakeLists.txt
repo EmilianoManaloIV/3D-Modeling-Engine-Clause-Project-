@@ -20,7 +20,13 @@ set(CORE_SOURCES
     src/skin.cpp
     src/particles.cpp
     src/transform.cpp
-    src/profiler.cpp)
+    src/profiler.cpp
+    src/jobs.cpp
+    src/polygon.cpp
+    src/csg.cpp
+    src/input_map.cpp
+    src/bvh.cpp
+    src/pathtracer.cpp)
 
 set(APP_SOURCES
     src/main.cpp
@@ -30,6 +36,9 @@ set(APP_SOURCES
     src/editor_render.cpp
     src/editor_gizmo.cpp
     src/editor_bench.cpp
+    src/editor_meshops.cpp
+    src/editor_renderview.cpp
+    src/gpu_tracer.cpp
     src/renderer.cpp
     src/ui.cpp
     src/font.cpp
@@ -45,6 +54,11 @@ endif()
 # WIN32 = GUI program on Windows (no console window); ignored elsewhere.
 add_executable(Modeler3D WIN32 ${APP_SOURCES} ${CORE_SOURCES})
 target_include_directories(Modeler3D PRIVATE src)
+
+# The job system (src/jobs.cpp) uses std::thread.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+target_link_libraries(Modeler3D PRIVATE Threads::Threads)
 
 if(MSVC)
     target_compile_options(Modeler3D PRIVATE /W3)
@@ -75,6 +89,7 @@ endif()
 if(MODELER_BUILD_TESTS)
     add_executable(modeler_tests tests/tests.cpp ${CORE_SOURCES})
     target_include_directories(modeler_tests PRIVATE src)
+    target_link_libraries(modeler_tests PRIVATE Threads::Threads)
     if(MINGW)
         target_link_options(modeler_tests PRIVATE -static)
     endif()

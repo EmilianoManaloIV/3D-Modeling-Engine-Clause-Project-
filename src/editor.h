@@ -7,6 +7,10 @@
 //   editor_actions.cpp commands (create, mesh/UV/rig tools, hierarchy, files)
 //   editor_ui.cpp      panels, viewport header, UV editor, dialogs
 //   editor_render.cpp  3D viewport drawing, gizmos, lights, particles
+#include "csg.h"
+#include "gpu_tracer.h"
+#include "pathtracer.h"
+#include "input_map.h"
 #include "particles.h"
 #include "platform.h"
 #include "renderer.h"
@@ -25,6 +29,11 @@ struct AppOptions {
     bool showHelp = false;
     std::string benchmarkReport;  // non-empty: run the performance benchmark and exit
     std::string configPath;       // settings file (keymap); empty = don't persist
+    // --render <out.png>: path-trace the scene, save it (+ a .txt report) and exit.
+    std::string renderOut;
+    std::string renderDevice;     // "cpu" / "gpu" (default: GPU if available)
+    int renderSamples = 0;        // 0 = Render tab default
+    int renderPercent = 0;        // resolution % (0 = default)
 };
 
 // Handles of the Unity-style transform gizmo.
@@ -110,6 +119,23 @@ private:
     void deleteSelected();
     void subdivideSelected();
     void flipSelected();
+    // --- path-traced rendering (editor_renderview.cpp) ---
+    void initGpuInfo();
+    void shutdownRender();
+    void toggleRenderView();
+    void startRender();
+    void stopRender();
+    void updateRender();
+    void presentRender(int vx, int vy, int vw, int vh);
+    bool saveRender(const std::string& path);
+    uint64_t renderStamp() const;
+    void renderSize(int& w, int& h) const;
+    int renderSamples() const;
+    bool renderRunning() const;
+    std::vector<std::string> gpuReport() const;
+    void processKeyCapture(const Input& in);
+    void booleanSelected(csg::Op op);   // editor_meshops.cpp
+    void meshCleanupSelected(int tool); // 0 n-gons->tris, 1 all->tris, 2 clean up, 3 tris->quads
     void setSmoothSelected(bool smooth);
     void selectAll();
     void extrude();
@@ -296,9 +322,28 @@ private:
     float camAnimT_ = 0;
     float flySpeed_ = 1.0f;   // scroll while flying to change it
     float flyHold_ = 0;       // seconds the fly keys have been held (acceleration)
+    // Look-around adjustability (Camera tab, saved in Modeler3D.cfg).
+    struct CameraSettings {
+        float orbitSensitivity = 0.4f;  // degrees per pixel (Alt+LMB / Blender MMB)
+        float lookSensitivity = 0.25f;  // degrees per pixel while flying (RMB)
+        float panSpeed = 1.0f;          // x the "grab the point under the cursor" rate
+        float zoomSpeed = 1.0f;         // wheel / Alt+RMB multiplier
+        float arrowSpeed = 1.0f;        // arrow-key camera movement
+        float fastMultiplier = 3.0f;    // Shift while flying / arrows
+        float transition = 0.3f;        // seconds for animated view changes (0 = instant)
+        bool invertX = false, invertY = false;
+        bool flyAcceleration = true;
+    } camSet_;
+    // Rebindable keys (Keys tab).
+    input::KeyMap keys_;
+    int captureAction_ = -1, captureSlot_ = 0;  // waiting for a key press in the Keys tab
+    bool swallowKeys_ = false;                   // a key was just captured: ignore it this frame
+    std::string keysFilter_;
+    bool configDirty_ = false;  // camera settings changed: save when the drag ends
     Rect sceneGizmoRect_;
     int sceneGizmoHover_ = -1;
     uint32_t lastOutlinerClickId_ = 0;
+    uint32_t outlinerAnchorId_ = 0;  // Shift+click range start in the hierarchy
     double lastOutlinerClickTime_ = -1;
     bool showStats_ = false;
 
@@ -325,6 +370,31 @@ private:
     float leftContentH_ = 0, rightContentH_ = 0;
 
     // view options
+    bool csgTriangulate_ = true, csgKeepCutters_ = false;
+    // Rendering (Render tab)
+    struct RenderSettings {
+        bool gpu = true;            // device: GPU fragment-shader tracer or CPU threads
+        float samples = 128;        // samples per pixel (progressive target)
+        float bounces = 4;          // max path length after the first hit
+        float resolution = 100;     // % of the viewport size
+        float clamp = 10;           // firefly clamp (0 = off)
+        float envStrength = 1;      // sky / ambient multiplier
+        float lightSize = 0.05f;    // soft shadow size
+        bool studioLights = true;   // studio key/fill when the scene has no lamps
+        float gpuBudgetMs = 12;     // GPU time spent tracing per frame
+        float cpuThreads = 0;       // 0 = all hardware threads
+    } renderSet_;
+    bool renderView_ = false, renderGpu_ = false, renderAutoUpdate_ = true;
+    rt::CpuRenderer cpuRender_;
+    GpuTracer gpuTracer_;
+    bool gpuTracerOk_ = false;
+    std::string gpuTracerError_;
+    std::shared_ptr<rt::SceneData> rtScene_;
+    uint64_t renderStamp_ = 0;
+    std::string renderOut_;
+    GpuTimer viewportTimer_;
+    std::string glVendor_, glRenderer_, glVersion_;
+    bool softwareGl_ = false;
     bool wireframe_ = false, showGrid_ = true, showHelp_ = false;
     int shading_ = SHADE_STUDIO;
 

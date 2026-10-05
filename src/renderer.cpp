@@ -331,6 +331,8 @@ void buildChecker(std::vector<uint8_t>& px, int size) {
 
 }  // namespace
 
+unsigned linkGlProgram(const char* vs, const char* fs, std::string& err) { return linkProgram(vs, fs, err); }
+
 bool Renderer::init(std::string& error) {
     meshProg_ = linkProgram(kMeshVS, kMeshFS, error);
     lineProg_ = meshProg_ ? linkProgram(kLineVS, kLineFS, error) : 0;

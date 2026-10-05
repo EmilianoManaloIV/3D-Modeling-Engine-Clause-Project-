@@ -87,10 +87,67 @@ Machine: Intel Iris Xe (integrated GPU), 1728x1020 window, Windows 11. The full 
    - **Fix:** the PNG writer now uses per-row filters (None/Sub/Up/Paeth) and its own DEFLATE encoder
      (LZ77 + fixed Huffman), which is about 27x smaller.
 
+## Multithreading and GPU utilisation
+
+**CPU: job system.** `src/jobs.*` is a thread pool (one worker per hardware thread, minus the
+calling thread) with `parallelFor` (fork/join; the caller helps, and its chunks go to the front of the
+queue) and `TaskGroup`s for background work such as path-tracing tiles. The benchmark runs each
+operation on 1 thread and then on all 12 threads (best of 3):
+
+| Operation | 1 thread | 12 threads | Speed-up |
+|---|---:|---:|---:|
+| CPU path tracing, 320x200 x 16 spp | 1134 ms | 225 ms | **5.0x** |
+| Path-tracer scene build + BVH (262k tris) | 108 ms | 61 ms | 1.8x |
+| Automatic bone weights (24k quads, 20 bones) | 4.3 ms | 1.2 ms | 3.5x |
+| CPU skinning x10 (24k quads) | 2.9 ms | 2.0 ms | 1.4x |
+| Render data, smooth (262k tris) | 11.3 ms | 8.9 ms | 1.3x |
+
+- Path tracing scales best because tiles are independent. The test laptop has 4 performance and 8
+  efficiency cores, so 12 threads do not mean 12x.
+- The BVH build is serial for the top levels and then builds independent subtrees in parallel.
+- Render data is only partly parallel (the face normals). The rest is a sequential indexing pass and
+  is memory-bound.
+
+**GPU: verifying that it is used.** OpenGL timer queries (`GL_TIME_ELAPSED`, read back
+asynchronously a few frames later so they never stall) measure the GPU time of the viewport and of
+path tracing. They are shown in the F3 overlay and in the benchmark report:
+
+| Scenario | Frame | GPU time (viewport) |
+|---|---:|---:|
+| Default scene | 3.7 ms | 1.0 ms |
+| Dense mesh (262k tris), selected | 9.4 ms | 6.1 ms |
+| Dense mesh, vertex drag every frame | 32.5 ms | 9.7 ms (rest is CPU: mesh rebuild 12 ms) |
+| Particles, ~50k live | 5.4 ms | 3.7 ms |
+| Lit view, dense mesh, 8 lights | 12.9 ms | 9.0 ms (GPU-bound) |
+
+- In the preview, the GPU is busy most of the frame only in the heavy shading scenes (dense mesh,
+  8 lights). In the others it idles for most of the frame, so the GPU is not the bottleneck.
+- For **path tracing**, the GPU tracer sizes its work to a per-frame GPU-time budget measured by the
+  same queries. On the Iris Xe it traced **32.8 Msamples/s against 4.6 on all 12 CPU threads (7.2x)**.
+- With the default 12 ms budget at 60 fps, the F3 overlay shows the GPU about 80% busy with tracing
+  while the UI stays responsive.
+- Scene data for the GPU (0.56 MB for the showcase) uploads in about 3-10 ms.
+- The status bar and the Render tab warn when OpenGL is a software renderer (e.g. llvmpipe under WSL).
+  In that case the "GPU" tracer runs on the CPU: under WSLg it reached 0.36 Msamples/s against 3.2
+  for the native CPU tracer. So rendering defaults to the CPU there.
+- On Windows laptops with hybrid graphics, the executable exports `NvOptimusEnablement` and
+  `AmdPowerXpressRequestHighPerformance`, so the driver gives it the discrete GPU.
+
+**A regression caught by the benchmark.** The first version of the concave-face support in
+`buildRenderMesh` called the general convexity test, which allocates, for every quad. That took render
+data from 10 to 18 ms at 262k triangles, and the vertex-drag scenario from 32 to 40+ ms. The check now
+reuses the face normal and allocates nothing, which restored both numbers.
+
+File I/O timings (save / load / OBJ) vary up to 4x between runs on this laptop (disk cache and
+antivirus scanning). The rest of the report is stable to about ±10%.
+
 ## Known remaining costs
 
-- **Single raycast against a very dense mesh:** about 1.2 ms per ray at 262k triangles, because there
-  is no BVH. Fine for clicks. Edit-mode vertex picking can do up to 32 occlusion rays on such a mesh.
+- **Single raycast against a very dense mesh:** about 1.2 ms per ray at 262k triangles, because
+  editor picking does not use the path tracer's BVH yet. Fine for clicks. Edit-mode vertex picking
+  can do up to 32 occlusion rays on such a mesh.
+- **Live render restarts** rebuild the BVH and re-upload the scene on every change (e.g. each frame
+  of a drag). That takes a few ms for normal scenes and about 70 ms at 262k triangles.
 - **Undo snapshots** copy the whole scene (11 ms with a 131k-quad mesh). A command/delta-based undo
   would remove this.
 - **Particles and dense meshes are GPU-bound** on the integrated GPU. MSAA 4x and the 1728x1020

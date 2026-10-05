@@ -1,5 +1,8 @@
 #include "mesh.h"
 
+#include "jobs.h"
+#include "polygon.h"
+
 #include <algorithm>
 #include <map>
 #include <tuple>
@@ -686,11 +689,13 @@ void buildRenderMesh(const Mesh& m, const std::vector<Vec3>& p, bool smooth, flo
     const size_t F = m.faces.size();
     const bool uvs = m.hasUVs(), weights = weightSlot >= 0 && m.hasWeights();
     std::vector<Vec3> rawN(F), unitN(F);
-    for (size_t f = 0; f < F; ++f) {
-        if (m.faces[f].size() < 3) continue;
-        rawN[f] = faceNormalRaw(p, m.faces[f]);
-        unitN[f] = normalize(rawN[f]);
-    }
+    jobs::parallelFor(0, (int)F, 8192, [&](int fb, int fe) {  // multithreaded on dense meshes
+        for (int f = fb; f < fe; ++f) {
+            if (m.faces[f].size() < 3) continue;
+            rawN[f] = faceNormalRaw(p, m.faces[f]);
+            unitN[f] = normalize(rawN[f]);
+        }
+    });
     const float cosLimit = std::cos(toRadians(smoothAngleDeg));
 
     // Fast path: if every face around a vertex is within half the smoothing
@@ -734,6 +739,7 @@ void buildRenderMesh(const Mesh& m, const std::vector<Vec3>& p, bool smooth, flo
     // corners are emitted once per face (and shared by that face's triangles).
     std::vector<int> shared(smooth ? p.size() : 0, -1);
     std::vector<uint32_t> corner;
+    std::vector<int> earCorners;
     for (size_t f = 0; f < F; ++f) {
         const auto& face = m.faces[f];
         const size_t n = face.size();
@@ -772,10 +778,24 @@ void buildRenderMesh(const Mesh& m, const std::vector<Vec3>& p, bool smooth, flo
             if (smooth && simple[v] && shared[v] < 0) shared[v] = (int)outV.size();
             outV.push_back(rv);
         }
-        for (size_t i = 1; i + 1 < n; ++i) {
-            outI.push_back(corner[0]);
-            outI.push_back(corner[i]);
-            outI.push_back(corner[i + 1]);
+        // Concave n-gon: ear clipping instead of a fan. The convexity test
+        // reuses the face normal and allocates nothing (this runs per face).
+        bool concave = false;
+        for (size_t i = 0; n > 3 && i < n && !concave; ++i) {
+            const Vec3 a = p[face[i]], b = p[face[(i + 1) % n]], c = p[face[(i + 2) % n]];
+            const Vec3 e1 = b - a, e2 = c - b;
+            concave = dot(cross(e1, e2), unitN[f]) < -1e-6f * (dot(e1, e1) + dot(e2, e2));
+        }
+        if (concave) {
+            earCorners.clear();
+            poly::triangulate(p, face, earCorners);
+            for (int c : earCorners) outI.push_back(corner[c]);
+        } else {
+            for (size_t i = 1; i + 1 < n; ++i) {
+                outI.push_back(corner[0]);
+                outI.push_back(corner[i]);
+                outI.push_back(corner[i + 1]);
+            }
         }
     }
 }

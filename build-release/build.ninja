@@ -98,6 +98,27 @@ build CMakeFiles/Modeler3D.dir/src/editor_bench.cpp.obj: CXX_COMPILER__Modeler3D
   OBJECT_DIR = CMakeFiles\Modeler3D.dir
   OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
 
+build CMakeFiles/Modeler3D.dir/src/editor_meshops.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/editor_meshops.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\editor_meshops.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
+build CMakeFiles/Modeler3D.dir/src/editor_renderview.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/editor_renderview.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\editor_renderview.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
+build CMakeFiles/Modeler3D.dir/src/gpu_tracer.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/gpu_tracer.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\gpu_tracer.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
 build CMakeFiles/Modeler3D.dir/src/renderer.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/renderer.cpp || cmake_object_order_depends_target_Modeler3D
   DEP_FILE = CMakeFiles\Modeler3D.dir\src\renderer.cpp.obj.d
   FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
@@ -196,6 +217,48 @@ build CMakeFiles/Modeler3D.dir/src/profiler.cpp.obj: CXX_COMPILER__Modeler3D_uns
   OBJECT_DIR = CMakeFiles\Modeler3D.dir
   OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
 
+build CMakeFiles/Modeler3D.dir/src/jobs.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/jobs.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\jobs.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
+build CMakeFiles/Modeler3D.dir/src/polygon.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/polygon.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\polygon.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
+build CMakeFiles/Modeler3D.dir/src/csg.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/csg.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\csg.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
+build CMakeFiles/Modeler3D.dir/src/input_map.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/input_map.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\input_map.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
+build CMakeFiles/Modeler3D.dir/src/bvh.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/bvh.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\bvh.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
+build CMakeFiles/Modeler3D.dir/src/pathtracer.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/pathtracer.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\pathtracer.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
 
 # =============================================================================
 # Link build statements for EXECUTABLE target Modeler3D
@@ -204,7 +267,7 @@ build CMakeFiles/Modeler3D.dir/src/profiler.cpp.obj: CXX_COMPILER__Modeler3D_uns
 #############################################
 # Link the executable Modeler3D.exe
 
-build Modeler3D.exe: CXX_EXECUTABLE_LINKER__Modeler3D_Release CMakeFiles/Modeler3D.dir/src/main.cpp.obj CMakeFiles/Modeler3D.dir/src/editor.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_actions.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_ui.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_render.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_gizmo.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_bench.cpp.obj CMakeFiles/Modeler3D.dir/src/renderer.cpp.obj CMakeFiles/Modeler3D.dir/src/ui.cpp.obj CMakeFiles/Modeler3D.dir/src/font.cpp.obj CMakeFiles/Modeler3D.dir/src/gl.cpp.obj CMakeFiles/Modeler3D.dir/src/image_io.cpp.obj CMakeFiles/Modeler3D.dir/src/platform_win32.cpp.obj CMakeFiles/Modeler3D.dir/src/mesh.cpp.obj CMakeFiles/Modeler3D.dir/src/uv.cpp.obj CMakeFiles/Modeler3D.dir/src/parametric.cpp.obj CMakeFiles/Modeler3D.dir/src/scene.cpp.obj CMakeFiles/Modeler3D.dir/src/skin.cpp.obj CMakeFiles/Modeler3D.dir/src/particles.cpp.obj CMakeFiles/Modeler3D.dir/src/transform.cpp.obj CMakeFiles/Modeler3D.dir/src/profiler.cpp.obj
+build Modeler3D.exe: CXX_EXECUTABLE_LINKER__Modeler3D_Release CMakeFiles/Modeler3D.dir/src/main.cpp.obj CMakeFiles/Modeler3D.dir/src/editor.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_actions.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_ui.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_render.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_gizmo.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_bench.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_meshops.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_renderview.cpp.obj CMakeFiles/Modeler3D.dir/src/gpu_tracer.cpp.obj CMakeFiles/Modeler3D.dir/src/renderer.cpp.obj CMakeFiles/Modeler3D.dir/src/ui.cpp.obj CMakeFiles/Modeler3D.dir/src/font.cpp.obj CMakeFiles/Modeler3D.dir/src/gl.cpp.obj CMakeFiles/Modeler3D.dir/src/image_io.cpp.obj CMakeFiles/Modeler3D.dir/src/platform_win32.cpp.obj CMakeFiles/Modeler3D.dir/src/mesh.cpp.obj CMakeFiles/Modeler3D.dir/src/uv.cpp.obj CMakeFiles/Modeler3D.dir/src/parametric.cpp.obj CMakeFiles/Modeler3D.dir/src/scene.cpp.obj CMakeFiles/Modeler3D.dir/src/skin.cpp.obj CMakeFiles/Modeler3D.dir/src/particles.cpp.obj CMakeFiles/Modeler3D.dir/src/transform.cpp.obj CMakeFiles/Modeler3D.dir/src/profiler.cpp.obj CMakeFiles/Modeler3D.dir/src/jobs.cpp.obj CMakeFiles/Modeler3D.dir/src/polygon.cpp.obj CMakeFiles/Modeler3D.dir/src/csg.cpp.obj CMakeFiles/Modeler3D.dir/src/input_map.cpp.obj CMakeFiles/Modeler3D.dir/src/bvh.cpp.obj CMakeFiles/Modeler3D.dir/src/pathtracer.cpp.obj
   FLAGS = -O3 -DNDEBUG
   LINK_FLAGS = -mwindows  -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = -lopengl32  -lgdi32  -luser32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
@@ -287,6 +350,48 @@ build CMakeFiles/modeler_tests.dir/src/profiler.cpp.obj: CXX_COMPILER__modeler_t
   OBJECT_DIR = CMakeFiles\modeler_tests.dir
   OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
 
+build CMakeFiles/modeler_tests.dir/src/jobs.cpp.obj: CXX_COMPILER__modeler_tests_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/jobs.cpp || cmake_object_order_depends_target_modeler_tests
+  DEP_FILE = CMakeFiles\modeler_tests.dir\src\jobs.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\modeler_tests.dir
+  OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
+
+build CMakeFiles/modeler_tests.dir/src/polygon.cpp.obj: CXX_COMPILER__modeler_tests_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/polygon.cpp || cmake_object_order_depends_target_modeler_tests
+  DEP_FILE = CMakeFiles\modeler_tests.dir\src\polygon.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\modeler_tests.dir
+  OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
+
+build CMakeFiles/modeler_tests.dir/src/csg.cpp.obj: CXX_COMPILER__modeler_tests_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/csg.cpp || cmake_object_order_depends_target_modeler_tests
+  DEP_FILE = CMakeFiles\modeler_tests.dir\src\csg.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\modeler_tests.dir
+  OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
+
+build CMakeFiles/modeler_tests.dir/src/input_map.cpp.obj: CXX_COMPILER__modeler_tests_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/input_map.cpp || cmake_object_order_depends_target_modeler_tests
+  DEP_FILE = CMakeFiles\modeler_tests.dir\src\input_map.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\modeler_tests.dir
+  OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
+
+build CMakeFiles/modeler_tests.dir/src/bvh.cpp.obj: CXX_COMPILER__modeler_tests_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/bvh.cpp || cmake_object_order_depends_target_modeler_tests
+  DEP_FILE = CMakeFiles\modeler_tests.dir\src\bvh.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\modeler_tests.dir
+  OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
+
+build CMakeFiles/modeler_tests.dir/src/pathtracer.cpp.obj: CXX_COMPILER__modeler_tests_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/pathtracer.cpp || cmake_object_order_depends_target_modeler_tests
+  DEP_FILE = CMakeFiles\modeler_tests.dir\src\pathtracer.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\modeler_tests.dir
+  OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
+
 
 # =============================================================================
 # Link build statements for EXECUTABLE target modeler_tests
@@ -295,7 +400,7 @@ build CMakeFiles/modeler_tests.dir/src/profiler.cpp.obj: CXX_COMPILER__modeler_t
 #############################################
 # Link the executable modeler_tests.exe
 
-build modeler_tests.exe: CXX_EXECUTABLE_LINKER__modeler_tests_Release CMakeFiles/modeler_tests.dir/tests/tests.cpp.obj CMakeFiles/modeler_tests.dir/src/mesh.cpp.obj CMakeFiles/modeler_tests.dir/src/uv.cpp.obj CMakeFiles/modeler_tests.dir/src/parametric.cpp.obj CMakeFiles/modeler_tests.dir/src/scene.cpp.obj CMakeFiles/modeler_tests.dir/src/skin.cpp.obj CMakeFiles/modeler_tests.dir/src/particles.cpp.obj CMakeFiles/modeler_tests.dir/src/transform.cpp.obj CMakeFiles/modeler_tests.dir/src/profiler.cpp.obj
+build modeler_tests.exe: CXX_EXECUTABLE_LINKER__modeler_tests_Release CMakeFiles/modeler_tests.dir/tests/tests.cpp.obj CMakeFiles/modeler_tests.dir/src/mesh.cpp.obj CMakeFiles/modeler_tests.dir/src/uv.cpp.obj CMakeFiles/modeler_tests.dir/src/parametric.cpp.obj CMakeFiles/modeler_tests.dir/src/scene.cpp.obj CMakeFiles/modeler_tests.dir/src/skin.cpp.obj CMakeFiles/modeler_tests.dir/src/particles.cpp.obj CMakeFiles/modeler_tests.dir/src/transform.cpp.obj CMakeFiles/modeler_tests.dir/src/profiler.cpp.obj CMakeFiles/modeler_tests.dir/src/jobs.cpp.obj CMakeFiles/modeler_tests.dir/src/polygon.cpp.obj CMakeFiles/modeler_tests.dir/src/csg.cpp.obj CMakeFiles/modeler_tests.dir/src/input_map.cpp.obj CMakeFiles/modeler_tests.dir/src/bvh.cpp.obj CMakeFiles/modeler_tests.dir/src/pathtracer.cpp.obj
   FLAGS = -O3 -DNDEBUG
   LINK_FLAGS = -static
   LINK_LIBRARIES = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
@@ -353,14 +458,14 @@ build all: phony Modeler3D.exe modeler_tests.exe
 #############################################
 # Re-run CMake if any of its inputs changed.
 
-build build.ninja: RERUN_CMAKE | C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeCXXInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeCommonLanguageInclude.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeGenericSystem.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeInitializeConfigs.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeLanguageInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeRCInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeSystemSpecificInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeSystemSpecificInitialize.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Linker/GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Linker/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/Windows-GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-Initialize.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-windres.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/WindowsPaths.cmake C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/CMakeLists.txt CMakeCache.txt CMakeFiles/3.31.6/CMakeCXXCompiler.cmake CMakeFiles/3.31.6/CMakeRCCompiler.cmake CMakeFiles/3.31.6/CMakeSystem.cmake
+build build.ninja: RERUN_CMAKE | C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeCXXInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeCommonLanguageInclude.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeGenericSystem.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeInitializeConfigs.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeLanguageInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeRCInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeSystemSpecificInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeSystemSpecificInitialize.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CheckCXXSourceCompiles.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CheckIncludeFileCXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CheckLibraryExists.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/FindPackageHandleStandardArgs.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/FindPackageMessage.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/FindThreads.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CheckSourceCompiles.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Linker/GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Linker/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/Windows-GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-Initialize.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-windres.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/WindowsPaths.cmake C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/CMakeLists.txt CMakeCache.txt CMakeFiles/3.31.6/CMakeCXXCompiler.cmake CMakeFiles/3.31.6/CMakeRCCompiler.cmake CMakeFiles/3.31.6/CMakeSystem.cmake
   pool = console
 
 
 #############################################
 # A missing CMake input file is not an error.
 
-build C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeCXXInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeCommonLanguageInclude.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeGenericSystem.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeInitializeConfigs.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeLanguageInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeRCInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeSystemSpecificInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeSystemSpecificInitialize.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Linker/GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Linker/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/Windows-GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-Initialize.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-windres.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/WindowsPaths.cmake C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/CMakeLists.txt CMakeCache.txt CMakeFiles/3.31.6/CMakeCXXCompiler.cmake CMakeFiles/3.31.6/CMakeRCCompiler.cmake CMakeFiles/3.31.6/CMakeSystem.cmake: phony
+build C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeCXXInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeCommonLanguageInclude.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeGenericSystem.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeInitializeConfigs.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeLanguageInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeRCInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeSystemSpecificInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CMakeSystemSpecificInitialize.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CheckCXXSourceCompiles.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CheckIncludeFileCXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/CheckLibraryExists.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/CMakeCommonCompilerMacros.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Compiler/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/FindPackageHandleStandardArgs.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/FindPackageMessage.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/FindThreads.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CMakeCXXLinkerInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CMakeCommonLinkerInformation.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Internal/CheckSourceCompiles.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Linker/GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Linker/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/Windows-GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Linker/Windows-GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU-CXX-ABI.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU-CXX.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-GNU.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-Initialize.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows-windres.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/Windows.cmake C$:/Program$ Files/JetBrains/CLion$ 2025.1.2/bin/cmake/win/x64/share/cmake-3.31/Modules/Platform/WindowsPaths.cmake C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/CMakeLists.txt CMakeCache.txt CMakeFiles/3.31.6/CMakeCXXCompiler.cmake CMakeFiles/3.31.6/CMakeRCCompiler.cmake CMakeFiles/3.31.6/CMakeSystem.cmake: phony
 
 
 #############################################

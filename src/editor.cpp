@@ -61,6 +61,7 @@ Mat4 Camera::projection(float aspect) const {
 // ============================================================================
 bool Editor::init(const AppOptions& options, std::string& error) {
     if (!renderer_.init(error)) return false;
+    initGpuInfo();
     dpi_ = platform::dpiScale();
     configPath_ = options.configPath;
     loadConfig();
@@ -80,12 +81,24 @@ bool Editor::init(const AppOptions& options, std::string& error) {
     redo_.clear();
     dirty_ = false;
     showHelp_ = options.showHelp;
+    if (!options.renderOut.empty()) {
+        renderOut_ = options.renderOut;
+        if (options.renderDevice == "cpu") renderSet_.gpu = false;
+        else if (options.renderDevice == "gpu") renderSet_.gpu = gpuTracerOk_;
+        if (options.renderSamples > 0) renderSet_.samples = (float)options.renderSamples;
+        if (options.renderPercent > 0) renderSet_.resolution = (float)options.renderPercent;
+        renderView_ = true;  // started on the first frame, once the viewport size is known
+        renderStamp_ = 0;
+    }
     if (status_.empty()) setStatus("Welcome to Modeler3D - press F1 for help.");
     updateTitle();
     return true;
 }
 
-void Editor::shutdown() { renderer_.shutdown(); }
+void Editor::shutdown() {
+    shutdownRender();
+    renderer_.shutdown();
+}
 
 void Editor::frame(const Input& in, int width, int height, float dt) {
     screenW_ = width;
@@ -96,6 +109,11 @@ void Editor::frame(const Input& in, int width, int height, float dt) {
     if (benchScenario_ >= 0) benchmarkTick();
     if (dt > 0) fps_ = fps_ * 0.95f + (1.0f / dt) * 0.05f;
     statusTime_ += dt;
+    swallowKeys_ = false;
+    if (configDirty_ && !ui_.isActive()) {
+        configDirty_ = false;
+        saveConfig();
+    }
 
     // Layout: tool panel | viewport | properties panel, status bar at bottom.
     const float fs = (float)fontScale_;
@@ -156,7 +174,13 @@ void Editor::frame(const Input& in, int width, int height, float dt) {
     renderer_.clearWindow(width, height, theme::panel);
     {
         PROF_SCOPE("viewport render");
+        viewportTimer_.begin();
         renderViewport();
+        viewportTimer_.end();
+    }
+    {
+        PROF_SCOPE("path trace");
+        updateRender();  // traces / uploads; the result is shown next frame by renderViewport
     }
     renderer_.drawUI(ui_, width, height);
     renderer_.purge(scene_);
@@ -563,84 +587,65 @@ void Editor::setTool(Tool t) {
 }
 
 void Editor::handleShortcuts(const Input& in) {
-    if (xf_ != Xform::None) return;
-    const bool unity = keymap_ == Keymap::Unity;
-    if (in.pressed(KEY_F1)) showHelp_ = true;
-    if (in.pressed(KEY_F3)) showStats_ = !showStats_;
-    if (in.pressed(KEY_F12)) screenshotPending_ = true;
-    if (in.ctrl()) {
-        if (in.pressed('Z')) {
-            if (in.shift()) redo();
-            else undo();
-        }
-        if (in.pressed('Y')) redo();
-        if (in.pressed('S')) saveFile();
-        if (in.pressed('O')) loadFile();
-        if (in.pressed('P')) parentSelected();
-        if (in.pressed('1')) setView(180, 0);
-        if (in.pressed('3')) setView(-90, 0);
-        if (in.pressed('7')) setView(0, -89.9f);
-        if (unity) {
-            if (in.pressed('D')) duplicateSelected();
-            if (in.pressed('A')) selectAll();
-            if (in.pressed('E')) extrude();
-        }
+    if (xf_ != Xform::None || captureAction_ >= 0 || swallowKeys_) return;
+    if (keys_.pressed(input::Action::Render, in)) {  // also works while the render view is up
+        toggleRenderView();
         return;
     }
-    if (in.alt()) {
-        if (in.pressed('P')) unparentSelected();
-        return;
-    }
-    if (in.pressed(KEY_TAB)) setMode(mode_ == Mode::Object ? Mode::Edit : Mode::Object);
-    if (in.pressed('F')) frameSelected();
-    if (in.pressed('U')) unwrapActive(uv::Method::Smart);
-    if (in.pressed(KEY_SPACE)) togglePlay();
-    if (in.pressed(KEY_DELETE)) deleteSelected();
-    if (in.pressed('1')) setView(0, 0);
-    if (in.pressed('3')) setView(90, 0);
-    if (in.pressed('7')) setView(0, 89.9f);
-    if (in.pressed('5')) {
+    using input::Action;
+    // Unity: the fly keys (W A S D Q E) steer the camera while RMB is held,
+    // so the tool shortcuts that share those keys pause during flight.
+    if (nav_ == Nav::Fly) return;
+    auto hit = [&](Action a) { return keys_.pressed(a, in); };
+    if (hit(Action::Help)) showHelp_ = true;
+    if (hit(Action::Stats)) showStats_ = !showStats_;
+    if (hit(Action::Screenshot)) screenshotPending_ = true;
+    if (hit(Action::Undo)) undo();
+    if (hit(Action::Redo)) redo();
+    if (hit(Action::Save)) saveFile();
+    if (hit(Action::Open)) loadFile();
+    if (hit(Action::Parent)) parentSelected();
+    if (hit(Action::Unparent)) unparentSelected();
+    if (hit(Action::ToggleEditMode)) setMode(mode_ == Mode::Object ? Mode::Edit : Mode::Object);
+    if (hit(Action::FrameSelected)) frameSelected();
+    if (hit(Action::SmartUnwrap)) unwrapActive(uv::Method::Smart);
+    if (hit(Action::PlayPause)) togglePlay();
+    if (hit(Action::Delete)) deleteSelected();
+    if (hit(Action::Duplicate)) duplicateSelected();
+    if (hit(Action::SelectAll)) selectAll();
+    if (hit(Action::Extrude)) extrude();
+    if (hit(Action::ViewFront)) setView(0, 0);
+    if (hit(Action::ViewBack)) setView(180, 0);
+    if (hit(Action::ViewRight)) setView(90, 0);
+    if (hit(Action::ViewLeft)) setView(-90, 0);
+    if (hit(Action::ViewTop)) setView(0, 89.9f);
+    if (hit(Action::ViewBottom)) setView(0, -89.9f);
+    if (hit(Action::ToggleOrtho)) {
         cam_.ortho = !cam_.ortho;
         setStatus(cam_.ortho ? "Orthographic view" : "Perspective view");
     }
-    auto cycleShading = [&]() {
+    if (hit(Action::ToolHand)) setTool(Tool::Hand);
+    if (hit(Action::ToolMove)) setTool(Tool::Move);
+    if (hit(Action::ToolRotate)) setTool(Tool::Rotate);
+    if (hit(Action::ToolScale)) setTool(Tool::Scale);
+    if (hit(Action::ToolUniversal)) setTool(Tool::Universal);
+    if (hit(Action::ToggleLocalGlobal)) {
+        localSpace_ = !localSpace_;
+        setStatus(localSpace_ ? "Handle orientation: Local" : "Handle orientation: Global");
+    }
+    if (hit(Action::TogglePivotCenter)) {
+        pivotCenter_ = !pivotCenter_;
+        setStatus(pivotCenter_ ? "Handle position: Center" : "Handle position: Pivot");
+    }
+    if (hit(Action::CycleShading)) {
         shading_ = (shading_ + 1) % SHADE_COUNT;
         static const char* names[] = {"Studio", "Lit", "UV checker", "Weights"};
         setStatus(std::string("Shading: ") + names[shading_]);
-    };
-
-    if (unity) {
-        if (in.mouseDown[MOUSE_RIGHT]) return;  // W A S D Q E fly the camera while RMB is held
-        if (in.pressed('Q')) setTool(Tool::Hand);
-        if (in.pressed('W')) setTool(Tool::Move);
-        if (in.pressed('E')) setTool(Tool::Rotate);
-        if (in.pressed('R')) setTool(Tool::Scale);
-        if (in.pressed('Y')) setTool(Tool::Universal);
-        if (in.pressed('X')) {
-            localSpace_ = !localSpace_;
-            setStatus(localSpace_ ? "Handle orientation: Local" : "Handle orientation: Global");
-        }
-        if (in.pressed('Z')) {
-            if (in.shift()) {
-                cycleShading();
-            } else {
-                pivotCenter_ = !pivotCenter_;
-                setStatus(pivotCenter_ ? "Handle position: Center" : "Handle position: Pivot");
-            }
-        }
-        return;
     }
-    // Blender-style keymap
-    if (in.pressed('H')) showHelp_ = true;
-    if (in.pressed('G')) beginTransform(Xform::Grab, true);
-    if (in.pressed('R')) beginTransform(Xform::Rotate, true);
-    if (in.pressed('S')) beginTransform(Xform::Scale, true);
-    if (in.pressed('D') && in.shift()) duplicateSelected();
-    if (in.pressed('X')) deleteSelected();
-    if (in.pressed('A')) selectAll();
-    if (in.pressed('E')) extrude();
-    if (in.pressed('Z')) cycleShading();
-    if (in.pressed('W')) wireframe_ = !wireframe_;
+    if (hit(Action::ToggleWireframe)) wireframe_ = !wireframe_;
+    if (xf_ == Xform::None && hit(Action::ModalGrab)) beginTransform(Xform::Grab, true);
+    if (xf_ == Xform::None && hit(Action::ModalRotate)) beginTransform(Xform::Rotate, true);
+    if (xf_ == Xform::None && hit(Action::ModalScale)) beginTransform(Xform::Scale, true);
 }
 
 bool Editor::handleUvEditor(const Input& in) {
@@ -686,7 +691,7 @@ void Editor::handleViewport(const Input& in) {
         setStatus(strf("Fly speed x%.2f", flySpeed_));
     } else if ((over || overGizmo) && in.wheel != 0.0f) {
         camAnimating_ = false;
-        cam_.distance = clampf(cam_.distance * std::pow(0.85f, in.wheel), 0.05f, 5000.0f);
+        cam_.distance = clampf(cam_.distance * std::pow(0.85f, in.wheel * camSet_.zoomSpeed), 0.05f, 5000.0f);
     }
 
     // --- an active transform owns the mouse ---
@@ -702,8 +707,9 @@ void Editor::handleViewport(const Input& in) {
             }
             return;
         }
+        const input::Action axisKeys[3] = {input::Action::AxisX, input::Action::AxisY, input::Action::AxisZ};
         for (int a = 0; a < 3; ++a)
-            if (in.pressed('X' + a)) xfAxis_ = xfAxis_ == a ? -1 : a;
+            if (keys_.pressed(axisKeys[a], in)) xfAxis_ = xfAxis_ == a ? -1 : a;
         if (in.mousePressed[MOUSE_LEFT] || in.pressed(KEY_ENTER) || in.pressed(KEY_SPACE)) {
             updateTransform(in);
             endTransform(true);
@@ -725,19 +731,20 @@ void Editor::handleViewport(const Input& in) {
         return;
     }
 
-    // --- Unity: arrow keys move the scene camera (Shift = faster) ---
-    if (unity && nav_ == Nav::None && !ui_.wantsKeyboard() && !ui_.keyboardUsedThisFrame()) {
+    // --- arrow keys (rebindable) move the scene camera (Shift = faster) ---
+    if (nav_ == Nav::None && !ui_.wantsKeyboard() && !ui_.keyboardUsedThisFrame() && captureAction_ < 0) {
         Vec3 flat = camForward();
         flat.y = 0;
         flat = length(flat) > 1e-4f ? normalize(flat) : camUp();
         Vec3 move;
-        if (in.keyDown[KEY_UP]) move += flat;
-        if (in.keyDown[KEY_DOWN]) move -= flat;
-        if (in.keyDown[KEY_RIGHT]) move += camRight();
-        if (in.keyDown[KEY_LEFT]) move -= camRight();
+        if (keys_.down(input::Action::CameraForward, in)) move += flat;
+        if (keys_.down(input::Action::CameraBack, in)) move -= flat;
+        if (keys_.down(input::Action::CameraRight, in)) move += camRight();
+        if (keys_.down(input::Action::CameraLeft, in)) move -= camRight();
         if (length(move) > 0) {
             camAnimating_ = false;
-            float speed = std::max(1.0f, cam_.distance) * 0.8f * (in.shift() ? 3.0f : 1.0f);
+            float speed = std::max(1.0f, cam_.distance) * 0.8f * camSet_.arrowSpeed *
+                          (in.shift() ? camSet_.fastMultiplier : 1.0f);
             cam_.target += normalize(move) * (speed * lastDt_);
             updateMatrices();
         }
@@ -771,41 +778,47 @@ void Editor::handleViewport(const Input& in) {
             nav_ = Nav::None;
         } else {
             if (!unity) nav_ = in.shift() ? Nav::Pan : Nav::Orbit;
+            // Inversion applies to rotation (orbit / mouse-look).
+            const float dx = in.mouseDX * (camSet_.invertX ? -1.0f : 1.0f);
+            const float dy = in.mouseDY * (camSet_.invertY ? -1.0f : 1.0f);
             switch (nav_) {
                 case Nav::Orbit:
-                    cam_.yaw -= in.mouseDX * 0.4f;
-                    cam_.pitch = clampf(cam_.pitch + in.mouseDY * 0.4f, -89.9f, 89.9f);
+                    cam_.yaw -= dx * camSet_.orbitSensitivity;
+                    cam_.pitch = clampf(cam_.pitch + dy * camSet_.orbitSensitivity, -89.9f, 89.9f);
                     break;
                 case Nav::Pan: {
-                    float k = worldPerPixel(cam_.target);
+                    float k = worldPerPixel(cam_.target) * camSet_.panSpeed;
                     cam_.target -= camRight() * (in.mouseDX * k);
                     cam_.target += camUp() * (in.mouseDY * k);
                     break;
                 }
                 case Nav::Zoom:
-                    cam_.distance = clampf(cam_.distance * std::exp((in.mouseDY - in.mouseDX) * 0.005f), 0.05f, 5000.0f);
+                    cam_.distance = clampf(cam_.distance * std::exp((in.mouseDY - in.mouseDX) * 0.005f * camSet_.zoomSpeed),
+                                           0.05f, 5000.0f);
                     break;
                 case Nav::Fly: {
                     // Mouse-look around the eye, then WASD / QE flight (Shift = fast).
                     Vec3 eye = cam_.eye();
-                    cam_.yaw -= in.mouseDX * 0.25f;
-                    cam_.pitch = clampf(cam_.pitch + in.mouseDY * 0.25f, -89.9f, 89.9f);
+                    cam_.yaw -= dx * camSet_.lookSensitivity;
+                    cam_.pitch = clampf(cam_.pitch + dy * camSet_.lookSensitivity, -89.9f, 89.9f);
                     float p = toRadians(cam_.pitch), y = toRadians(cam_.yaw);
                     Vec3 dir(std::cos(p) * std::sin(y), std::sin(p), std::cos(p) * std::cos(y));
                     cam_.target = eye - dir * cam_.distance;
                     updateMatrices();
                     Vec3 move;
-                    if (in.keyDown['W']) move += camForward();
-                    if (in.keyDown['S']) move -= camForward();
-                    if (in.keyDown['D']) move += camRight();
-                    if (in.keyDown['A']) move -= camRight();
-                    if (in.keyDown['E']) move += Vec3(0, 1, 0);
-                    if (in.keyDown['Q']) move -= Vec3(0, 1, 0);
+                    using input::Action;
+                    if (keys_.down(Action::FlyForward, in)) move += camForward();
+                    if (keys_.down(Action::FlyBack, in)) move -= camForward();
+                    if (keys_.down(Action::FlyRight, in)) move += camRight();
+                    if (keys_.down(Action::FlyLeft, in)) move -= camRight();
+                    if (keys_.down(Action::FlyUp, in)) move += Vec3(0, 1, 0);
+                    if (keys_.down(Action::FlyDown, in)) move -= Vec3(0, 1, 0);
                     if (length(move) > 0) {
                         // Unity-style acceleration: speed ramps up to 4x while the keys stay held.
                         flyHold_ += lastDt_;
-                        float accel = 1.0f + std::min(flyHold_, 2.0f) * 1.5f;
-                        float speed = std::max(1.0f, cam_.distance) * 1.2f * flySpeed_ * accel * (in.shift() ? 3.0f : 1.0f);
+                        float accel = camSet_.flyAcceleration ? 1.0f + std::min(flyHold_, 2.0f) * 1.5f : 1.0f;
+                        float speed = std::max(1.0f, cam_.distance) * 1.2f * flySpeed_ * accel *
+                                      (in.shift() ? camSet_.fastMultiplier : 1.0f);
                         cam_.target += normalize(move) * (speed * lastDt_);
                     } else {
                         flyHold_ = 0;

@@ -492,6 +492,7 @@ void Editor::clickSceneGizmo(int part) {
 // ----------------------------------------------------------------------------
 void Editor::setKeymap(Keymap k) {
     keymap_ = k;
+    keys_.setPreset(k == Keymap::Unity ? input::Preset::Unity : input::Preset::Blender);
     if (k == Keymap::Blender && tool_ == Tool::Hand) tool_ = Tool::Move;
     saveConfig();
     setStatus(k == Keymap::Unity ? "Unity keymap: Q W E R Y tools, Alt+LMB orbit, RMB+WASD fly"
@@ -499,22 +500,57 @@ void Editor::setKeymap(Keymap k) {
 }
 
 void Editor::loadConfig() {
+    keys_.setPreset(input::Preset::Unity);
     if (configPath_.empty()) return;
     FILE* f = std::fopen(configPath_.c_str(), "rb");
     if (!f) return;
-    char line[128];
+    char line[256];
+    bool sawBindings = false;
+    std::vector<std::string> bindLines;
     while (std::fgets(line, sizeof line, f)) {
         std::string s = trimmed(line);
+        float v = 0;
+        int b = 0;
+        char name[64];
         if (s == "keymap blender") keymap_ = Keymap::Blender;
         else if (s == "keymap unity") keymap_ = Keymap::Unity;
+        else if (s.compare(0, 5, "bind ") == 0) bindLines.push_back(s);
+        else if (std::sscanf(s.c_str(), "camera %63s %f", name, &v) == 2) {
+            std::string n = name;
+            b = v != 0.0f;
+            if (n == "orbit") camSet_.orbitSensitivity = clampf(v, 0.01f, 5.0f);
+            else if (n == "look") camSet_.lookSensitivity = clampf(v, 0.01f, 5.0f);
+            else if (n == "pan") camSet_.panSpeed = clampf(v, 0.05f, 20.0f);
+            else if (n == "zoom") camSet_.zoomSpeed = clampf(v, 0.05f, 20.0f);
+            else if (n == "arrows") camSet_.arrowSpeed = clampf(v, 0.05f, 20.0f);
+            else if (n == "fast") camSet_.fastMultiplier = clampf(v, 1.0f, 20.0f);
+            else if (n == "transition") camSet_.transition = clampf(v, 0.0f, 3.0f);
+            else if (n == "invert_x") camSet_.invertX = b;
+            else if (n == "invert_y") camSet_.invertY = b;
+            else if (n == "fly_accel") camSet_.flyAcceleration = b;
+            else if (n == "fly_speed") flySpeed_ = clampf(v, 0.01f, 100.0f);
+            else if (n == "fov") cam_.fovY = clampf(v, 10.0f, 120.0f);
+        }
     }
     std::fclose(f);
+    keys_.setPreset(keymap_ == Keymap::Unity ? input::Preset::Unity : input::Preset::Blender);
+    for (const std::string& l : bindLines) sawBindings |= keys_.parseLine(l);
+    (void)sawBindings;
 }
 
 void Editor::saveConfig() {
     if (configPath_.empty()) return;
     if (FILE* f = std::fopen(configPath_.c_str(), "wb")) {
-        std::fprintf(f, "# Modeler3D settings\nkeymap %s\n", keymap_ == Keymap::Unity ? "unity" : "blender");
+        std::fprintf(f, "# Modeler3D settings (edit in the Keys and Camera tabs)\nkeymap %s\n",
+                     keymap_ == Keymap::Unity ? "unity" : "blender");
+        const CameraSettings& c = camSet_;
+        std::fprintf(f,
+                     "camera orbit %g\ncamera look %g\ncamera pan %g\ncamera zoom %g\ncamera arrows %g\n"
+                     "camera fast %g\ncamera transition %g\ncamera invert_x %d\ncamera invert_y %d\n"
+                     "camera fly_accel %d\ncamera fly_speed %g\ncamera fov %g\n",
+                     c.orbitSensitivity, c.lookSensitivity, c.panSpeed, c.zoomSpeed, c.arrowSpeed, c.fastMultiplier,
+                     c.transition, (int)c.invertX, (int)c.invertY, (int)c.flyAcceleration, flySpeed_, cam_.fovY);
+        std::fputs(keys_.serialize().c_str(), f);
         std::fclose(f);
     }
 }

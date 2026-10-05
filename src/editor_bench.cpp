@@ -5,12 +5,17 @@
 // the profiler sections for each, then times a set of one-shot heavy
 // operations, and writes a Markdown report.
 #include "editor_internal.h"
+#include "csg.h"
+#include "polygon.h"
+#include "pathtracer.h"
+#include "jobs.h"
 #include "gl.h"
 #include "profiler.h"
 #include "skin.h"
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 
@@ -221,6 +226,8 @@ void Editor::benchmarkTick() {
         for (const auto& c : prof::counters())
             if (c.total > 0) counters += strf("%s %.0f, ", c.name, c.total / frames);
         if (!counters.empty()) benchText_ += "\nPer frame: " + counters.substr(0, counters.size() - 2) + "\n";
+        if (viewportTimer_.supported())
+            benchText_ += strf("\nGPU time for the viewport (GL timer queries): %.3f ms/frame\n", viewportTimer_.avgMs());
         if (xf_ != Xform::None) endTransform(true);
 
         ++benchScenario_;
@@ -316,5 +323,102 @@ void Editor::benchmarkOperations() {
     timeIt("CPU skinning x10 (24k quads, 20 bones)", [&] {
         for (int k = 0; k < 10; ++k) evaluateMesh(scene_, col, false, scratch, model);
     });
+    {
+        Mesh a = primitives::uvSphere(1.0f, 64, 32), b = primitives::cylinder(0.5f, 3.0f, 64);
+        timeIt("Boolean difference (sphere 64x32 - cylinder 64) + clean-up", [&] {
+            csg::Result r = csg::apply(a, b, csg::Op::Difference);
+            poly::cleanup(r.mesh);
+            poly::triangulateMesh(r.mesh, 4);
+        });
+    }
+
+    // --- the same work on 1 thread and on every hardware thread ---
+    const int hw = jobs::hardwareThreads();
+    benchText_ += strf("\n## Multithreading (job system, 1 vs %d threads)\n\n"
+                       "Best of 3 runs each.\n\n| Operation | 1 thread ms | %d threads ms | speed-up |\n|---|---:|---:|---:|\n", hw, hw);
+    auto bestOf3 = [&](auto&& fn) {
+        double best = 1e30;
+        for (int k = 0; k < 3; ++k) {
+            auto t0 = std::chrono::steady_clock::now();
+            fn();
+            best = std::min(best, msSince(t0));
+        }
+        return best;
+    };
+    auto compare = [&](const char* name, auto&& fn) {
+        jobs::setThreadCount(1);
+        double one = bestOf3(fn);
+        jobs::setThreadCount(hw);
+        double all = bestOf3(fn);
+        benchText_ += strf("| %s | %.1f | %.1f | %.2fx |\n", name, one, all, all > 0 ? one / all : 0.0);
+    };
+    compare("CPU skinning x10 (24k quads, 20 bones)", [&] {
+        for (int k = 0; k < 10; ++k) evaluateMesh(scene_, col, false, scratch, model);
+    });
+    compare("Automatic weights (24k quads, 20 bones)", [&] { autoWeights(scene_, col); });
+    compare("buildRenderMesh, smooth (262k tris)", [&] { buildRenderMesh(dense, dense.verts, true, 40, -1, rv, ri); });
+    clearForBenchmark();
+    scene_.add(dense, "Dense", kPalette[1]);
+    rt::Settings rs;
+    rt::SceneData rtData;
+    compare("Path-tracer scene build + BVH (262k tris)", [&] { rt::buildScene(scene_, rs, rtData); });
+    const int bvhNodes = (int)rtData.bvh.nodes.size();
+
+    // --- path tracing: CPU (1 / N threads) vs GPU on the showcase scene ---
+    clearForBenchmark();
+    buildDemo(1);
+    updateMatrices();
+    auto showcase = std::make_shared<rt::SceneData>();
+    rt::buildScene(scene_, rs, *showcase);
+    const int rw = 320, rh = 200, spp = 16;
+    rt::View view =
+        rt::makeView(cam_.eye(), cam_.target, cam_.fovY, cam_.ortho, cam_.orthoHalfHeight(), (float)rw / rh);
+    auto cpuTrace = [&]() {
+        rt::CpuRenderer r;
+        r.start(showcase, view, rs, rw, rh, spp);
+        while (r.running()) {
+            r.update();
+            std::this_thread::yield();
+        }
+    };
+    benchText_ += strf("\n## Path tracing (%dx%d, %d samples/pixel, %d triangles, max %d bounces)\n\n"
+                       "| Device | ms | Msamples/s |\n|---|---:|---:|\n",
+                       rw, rh, spp, (int)showcase->triangleCount(), rs.maxBounces);
+    const double pixelSamples = (double)rw * rh * spp;
+    for (int threads : {1, hw}) {
+        jobs::setThreadCount(threads);
+        auto t0 = std::chrono::steady_clock::now();
+        cpuTrace();
+        double ms = msSince(t0);
+        benchText_ += strf("| CPU, %d thread%s | %.0f | %.2f |\n", threads, threads > 1 ? "s" : "", ms,
+                           pixelSamples / (ms * 1e3));
+    }
+    if (gpuTracerOk_) {
+        // Warm up (the driver finishes compiling the shader on first use, and
+        // the adaptive batch size starts small until the GPU timer has
+        // measured the scene), then time a clean upload + run.
+        gpuTracer_.start(*showcase, view, rs, rw, rh, spp);
+        for (int k = 0; k < 6 && gpuTracer_.running(); ++k) {
+            gpuTracer_.step(30.0);
+            gl::Finish();
+        }
+        gl::Finish();
+        auto tu = std::chrono::steady_clock::now();
+        gpuTracer_.start(*showcase, view, rs, rw, rh, spp);
+        gl::Finish();
+        const double uploadMs = msSince(tu);
+        auto t0 = std::chrono::steady_clock::now();
+        while (gpuTracer_.running()) {
+            gpuTracer_.step(30.0);
+            gl::Finish();
+        }
+        double ms = msSince(t0);
+        benchText_ += strf("| GPU (%s) | %.0f | %.2f |\n", glRenderer_.c_str(), ms, pixelSamples / (ms * 1e3));
+        benchText_ += strf("\nGPU data uploaded for tracing: %.2f MB (triangles, BVH, materials as RGBA32F textures) "
+                           "in %.1f ms. GPU time per frame while tracing (timer queries): %.1f ms of a %.0f ms budget.\n",
+                           gpuTracer_.uploadedBytes() / 1048576.0, uploadMs, gpuTracer_.gpuMsPerFrame(), 30.0);
+        gpuTracer_.stop();
+    }
+    benchText_ += strf("BVH of the 262k-triangle mesh: %d nodes.\n", bvhNodes);
     clearForBenchmark();
 }

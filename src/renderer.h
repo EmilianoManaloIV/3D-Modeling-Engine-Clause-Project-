@@ -50,6 +50,9 @@ struct MaterialParams {
     float highlight = 0;
 };
 
+// Compiles and links a vertex + fragment shader pair (0 on error, message in err).
+unsigned linkGlProgram(const char* vsSrc, const char* fsSrc, std::string& err);
+
 class Renderer {
 public:
     bool init(std::string& error);

@@ -1,17 +1,28 @@
 // Unit tests for the OpenGL-free core (math, mesh operations, file I/O).
 // Build with -DMODELER_BUILD_TESTS=ON and run modeler_tests.
+#include "bvh.h"
+#include "csg.h"
+#include "input_map.h"
+#include "jobs.h"
 #include "mesh.h"
 #include "parametric.h"
 #include "particles.h"
+#include "pathtracer.h"
+#include "polygon.h"
 #include "scene.h"
 #include "skin.h"
 #include "transform.h"
 #include "uv.h"
 
+#include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <memory>
 #include <string>
+#include <thread>
 
 static int g_failures = 0, g_checks = 0;
 #define CHECK(cond)                                                          \
@@ -646,7 +657,10 @@ static void testTransformApi() {
     CHECK(sphere.topology != topo);
 }
 
+#include "tests_round5.inc"
+
 int main() {
+    jobs::init();
     testMath();
     testPrimitives();
     testCatmullClark();
@@ -660,6 +674,13 @@ int main() {
     testParticles();
     testFilesV2();
     testTransformApi();
+    testJobs();
+    testPolygonSolver();
+    testBooleans();
+    testBvh();
+    testPathTracer();
+    testKeyBindings();
+    jobs::shutdown();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

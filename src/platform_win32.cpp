@@ -15,6 +15,15 @@
 
 #include "platform.h"
 
+// Laptops with hybrid graphics (NVIDIA Optimus / AMD PowerXpress) run
+// programs on the low-power integrated GPU unless the executable exports
+// these symbols - ask for the discrete GPU so the viewport and the path
+// tracer get the fast one.
+extern "C" {
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+
 namespace {
 
 // WGL_ARB_pixel_format / WGL_ARB_multisample / WGL_ARB_create_context tokens.

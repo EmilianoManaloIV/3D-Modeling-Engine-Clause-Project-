@@ -1,4 +1,6 @@
 #include "skin.h"
+
+#include "jobs.h"
 #include "profiler.h"
 
 #include <cmath>
@@ -28,7 +30,9 @@ const std::vector<Vec3>& evaluateMesh(const Scene& s, int i, bool restPose, std:
     const Mat4 W = model;
     model = Mat4();
     scratch.resize(o.mesh.verts.size());
-    for (size_t v = 0; v < o.mesh.verts.size(); ++v) {
+    // Vertices are independent: spread them over the job system's threads.
+    jobs::parallelFor(0, (int)o.mesh.verts.size(), 4096, [&](int vb, int ve) {
+    for (int v = vb; v < ve; ++v) {
         Vec3 p = transformPoint(W, o.mesh.verts[v]);
         const BoneWeights& bw = o.mesh.weights[v];
         Vec3 acc;
@@ -44,6 +48,7 @@ const std::vector<Vec3>& evaluateMesh(const Scene& s, int i, bool restPose, std:
         if (total > 1.0f) scratch[v] = acc / total;
         else scratch[v] = acc + p * (1.0f - total);
     }
+    });
     return scratch;
 }
 
@@ -95,7 +100,8 @@ void autoWeights(Scene& s, int meshIndex) {
     avgLen = std::max(1e-3f, avgLen / std::max<size_t>(1, heads.size()));
     const float eps = 0.05f * avgLen;
     o.mesh.weights.assign(o.mesh.verts.size(), BoneWeights());
-    for (size_t v = 0; v < o.mesh.verts.size(); ++v) {
+    jobs::parallelFor(0, (int)o.mesh.verts.size(), 1024, [&](int vb, int ve) {
+    for (int v = vb; v < ve; ++v) {
         Vec3 p = transformPoint(W, o.mesh.verts[v]);
         BoneWeights bw;
         for (size_t k = 0; k < heads.size(); ++k) {
@@ -108,6 +114,7 @@ void autoWeights(Scene& s, int meshIndex) {
         bw.normalize();
         o.mesh.weights[v] = bw;
     }
+    });
     o.mesh.touch();
 }
 

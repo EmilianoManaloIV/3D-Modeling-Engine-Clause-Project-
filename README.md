@@ -28,8 +28,23 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
   shape into a plain mesh; entering Edit mode bakes automatically (undo restores the recipe).
 - **Object mode**: select (click, Shift+click, box), move / rotate / scale with axis locks and
   snapping, duplicate, delete, rename, and numeric location / rotation / scale.
+- **Hierarchy multi-select**: Ctrl+click toggles an object, Shift+click selects the range from the
+  last clicked row, and Ctrl+Shift+click adds a range.
 - **Edit mode** (vertices): select, move / rotate / scale, **extrude** faces, delete, edit the
   median numerically. **Catmull-Clark subdivision** and **flip normals**.
+
+**Booleans and the n-gon solver** (*Mesh* tab)
+- **Union / Difference / Intersection** of closed meshes, using BSP trees. Select the cutter mesh(es),
+  then the target last; the target becomes the result in place, and the cutters are removed (or
+  kept, with *Keep cut*). UVs are carried through the cuts, and it can be undone.
+- The cut pieces are cleaned up automatically: vertices are welded, the **T-junctions** that
+  splitting leaves are repaired (no cracks), and slivers are removed. With *Tris out* on, the
+  result is triangulated.
+- **N-gon solver** tools for any mesh: *Ngon>Tri* triangulates only faces with 5+ sides, *All>Tris*
+  triangulates everything, *Clean up* runs the weld / T-junction / degenerate-face repair, and
+  *Tri>Quad* merges coplanar triangle pairs back into quads.
+- Triangulation is ear clipping, so concave n-gons (an L shape, a star, the cap of a cut) become
+  correct triangles. The renderer uses it too, so concave faces display correctly.
 
 **Hierarchy**
 - Parent objects to each other (`Ctrl+P`, the last-clicked object becomes the parent) or clear the
@@ -43,6 +58,22 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
 - **Point, sun and spot lights** with color, intensity, range, cone angle and edge blend, plus a
   scene **ambient** color. Up to 8 lights are used in the **Lit** view.
 - Materials have base color, **emission** (color + strength, glows in every view) and gloss.
+
+**Rendering (path tracing)** (*Render* tab, `F5`, or the *Render* button on the tool palette)
+- A Monte Carlo **path tracer** shows the scene in the viewport and refines it progressively:
+  soft shadows from every lamp, glossy reflections, emissive objects lighting their surroundings,
+  multiple light bounces, and anti-aliasing.
+- **Sampling controls**: samples per pixel (presets 16 / 64 / 256 / 1024, or any number; raising it
+  continues a finished render), max bounces, resolution %, a firefly clamp, sky strength and soft
+  shadow size.
+- **GPU or CPU**: the GPU tracer runs in a fragment shader (triangles, BVH and materials uploaded as
+  float textures). The CPU tracer spreads tiles over every core. Both use the same BVH and produce
+  the same image.
+- *Live*: moving the camera or editing the scene restarts the render. *Save PNG* writes the image,
+  plus a `.txt` with its timings. Scenes without lamps are lit like the Studio view. Emissive
+  surfaces don't cast shadows, so a lamp inside a glowing shade still lights the room. Particles
+  are not path traced.
+- Command line: `Modeler3D --demo 1 --render out.png --device gpu --samples 256` renders and exits.
 
 **UVs**
 - **Unwrap**: *Smart* (charts by face direction, packed without overlap), *Box*, *Planar*,
@@ -92,7 +123,7 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
     (switches to Iso), and click the centre or the Persp/Iso label to toggle projection.
   - `F`, the view buttons and **double-clicking an object in the hierarchy** frame it with an eased
     camera transition.
-  - Field of view and fly speed are under *Mesh > Scene camera*.
+  - Field of view, sensitivities and speeds are in the *Camera* tab.
 - **Inspector:** shows Position / Rotation / Scale, with **Reset / Copy / Paste** (Paste goes to every
   selected object).
 - **Scripting-style Transform API** in [src/transform.h](src/transform.h): `position / setPosition`,
@@ -100,8 +131,29 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
   `rotateAround`, `lookAt`, `forward / right / up`, `transformPoint / inverseTransformPoint`,
   `transformDirection`, `transformVector`, `lossyScale`, `reset`. The handles use it, and it is
   unit-tested.
-- **Keymaps:** Unity (default) or Blender (G/R/S modal transforms). Choose in *File > Keymap*; the
-  choice is saved in `Modeler3D.cfg` next to the executable.
+- **Keymaps:** Unity (default) or Blender (G/R/S modal transforms) presets, chosen in the *Keys* tab.
+
+**Settings**
+- **Key rebinding** (*Keys* tab): every shortcut, fly key, camera arrow key and transform axis key is
+  an action with two binding slots. Click a slot and press a key or combination (Ctrl / Shift / Alt).
+  Esc cancels, Backspace clears it, and *Find* filters the list. A key that is already used in the
+  same context moves to the new action, and the status bar names the action that lost it. Fly keys can
+  share letters with tool shortcuts because they only apply while the right button is held.
+- **Camera** (*Camera* tab): orbit and mouse-look sensitivity, invert X / Y, pan, zoom, fly and
+  arrow-key speeds, the Shift boost, fly acceleration on / off, field of view and the duration of
+  animated view changes.
+- Bindings and camera settings are saved in `Modeler3D.cfg` next to the executable.
+
+**Multithreading and GPU use**
+- A **job system** (a thread pool with parallel-for and task groups) uses every CPU core for CPU
+  path tracing, BVH building, render-scene preparation, skinning, automatic weights and dense
+  mesh normals.
+- The **F3 overlay** shows the GPU's name and the GPU time of the viewport and of path tracing, read
+  from OpenGL timer queries, and how busy that keeps the GPU. The GPU tracer sizes its work to a
+  per-frame GPU-time budget (*GPU ms*), so the GPU stays busy and the UI stays smooth.
+- On laptops with two GPUs, the Windows build asks for the fast (discrete) one. If OpenGL turns
+  out to be a software renderer (llvmpipe, Microsoft Basic Render), the status bar warns about it
+  and rendering defaults to the CPU tracer, which is much faster in that case.
 
 **Everything else**
 - **Undo / redo** (64 steps) covers every edit.
@@ -153,11 +205,33 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+S` / `Ctrl+O` | Save / load the file named in the File tab |
 | `F3` / `F12` / `F1` | Performance overlay / PNG screenshot / help |
+| `F5` | Path-traced render on / off |
+| Ctrl / Shift + click in the hierarchy | Toggle one object / select a range |
 
-The left panel has tabs: **Create, Mesh, UV, Rig, FX, File**. To change a number in the right
+All of these are defaults. Change any of them in the **Keys** tab.
+
+The left panel has tabs: **Create, Mesh, UV, Rig, FX, Render, File, Keys, Camera**. To change a number in the right
 panel, drag it sideways (hold Shift for fine steps) or click it and type a value.
 
 ## Screenshots
+
+### Path tracing
+
+![The showcase scene path-traced on the GPU at 256 samples per pixel, with the Render tab settings](docs/path-tracing.png)
+
+*`Modeler3D --demo 1`, Render tab: GPU path tracing with soft shadows, glossy reflections and the glowing
+lamp lighting the floor. The panel shows progress, samples/s and the sampling settings.*
+
+### Booleans
+
+![Union, difference and intersection of a cube and a sphere, with the Boolean and N-gon solver tools](docs/booleans.png)
+
+*`Modeler3D --demo 5`: a cube and a sphere combined by union, difference and intersection, and a
+block with a cylinder cutter to try it yourself. The Mesh tab has the Boolean and N-gon solver tools.*
+
+### Key bindings
+
+![The Keys tab with Unity / Blender presets and two binding slots per action](docs/key-bindings.png)
 
 ### Unity-style transform handles
 
@@ -184,7 +258,10 @@ view shows that bone's influence (blue 0 to red 1).*
 
 See [docs/performance.md](docs/performance.md) for the benchmark method, before/after numbers and the
 bottlenecks that were fixed. For example, 1000 objects went from 187 ms to 12 ms per frame, and
-loading a 131k-quad scene from 4.5 s to 0.13 s. Run it yourself with `Modeler3D --benchmark report.md`.
+loading a 131k-quad scene from 4.5 s to 0.13 s. The report also compares 1 thread with all threads and
+CPU with GPU path tracing. On the test laptop (Intel Iris Xe, 12 threads), the GPU path traces about 7x
+faster than all 12 CPU threads, and the CPU tracer scales about 5x from 1 to 12 threads. Run it yourself
+with `Modeler3D --benchmark report.md`.
 
 ## Building from source
 
@@ -197,7 +274,7 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 (`sudo apt install build-essential cmake libx11-dev libgl-dev` on Debian/Ubuntu), then run
 `./build_linux.sh`. The result is `dist/linux/Modeler3D`.
 
-**Tests:** configure with `-DMODELER_BUILD_TESTS=ON` and run `modeler_tests`. Its 983 checks cover:
+**Tests:** configure with `-DMODELER_BUILD_TESTS=ON` and run `modeler_tests`. Its 1604 checks cover:
 - math and TRS decomposition
 - primitives and all 10 parametric shapes (closed, consistently oriented, outward-facing)
 - Catmull-Clark (including UVs and weights), extrude / delete
@@ -206,6 +283,13 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 - skinning (rest pose is exact, bending moves the right vertices)
 - particles, ray picking, and `.m3d` / OBJ round trips
 - the Unity-style Transform API, the id cache, ray/box rejection and indexed render data
+- the job system, on 1 thread and on many, including nested parallel loops
+- the n-gon solver: concave and star polygons, T-junction repair, welding, tri/quad round trips
+- booleans: exact volumes for union, difference and intersection, results closed and consistently
+  oriented, coplanar faces, a cavity, and a curved cut
+- the BVH (against brute force, and parallel against serial builds), and the path tracer's lighting,
+  shadows, emission and progressive renderer
+- key bindings: parsing, presets without conflicts, rebinding and config round trips
 
 ## How the code maps to the Engine Books
 
@@ -230,6 +314,13 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 | Main loop, startup / shutdown order, frame timing | `main.cpp` | GEA Vol. I sec. 6.1, ch. 8 |
 | Immediate-mode UI, in-tool menus, debug overlays | `ui.cpp`, `editor_ui.cpp` | GEA Vol. I ch. 10; GEA Vol. II sec. 12.8 |
 | Asset I/O (scene + OBJ) | `scene.cpp` | GEA Vol. I ch. 7 |
+| Boolean operations with BSP trees | `csg.cpp` | FoCG sec. 12.4 (BSP trees) |
+| Polygon triangulation (ear clipping), mesh clean-up | `polygon.cpp` | FoCG sec. 12.1 |
+| Bounding volume hierarchy (binned SAH) | `bvh.cpp` | FoCG sec. 12.3 (spatial data structures) |
+| Path tracing, Monte Carlo sampling | `pathtracer.cpp`, `gpu_tracer.cpp` | FoCG ch. 4 (ray tracing), ch. 13 (sampling), sec. 14.10 (Monte Carlo ray tracing) |
+| Job system / thread pool, parallel loops | `jobs.cpp` | GEA Vol. I ch. 4 (parallelism and concurrency), sec. 8.6 |
+| Input re-mapping, context-sensitive controls | `input_map.cpp` | GEA Vol. I sec. 9.5 (game engine HID systems) |
+| GPU timer queries, in-game profiling | `gpu_tracer.cpp` (`GpuTimer`) | GEA Vol. I sec. 10.8 |
 
 ## Project layout
 
@@ -256,11 +347,21 @@ src/
   editor_render.cpp   viewport drawing, selection outline, icons, particles
   editor_gizmo.cpp    Unity-style Move / Rotate / Scale handles, keymap settings
   editor_bench.cpp    --benchmark scenarios and report
+  editor_meshops.cpp  Boolean and n-gon solver commands
+  editor_renderview.cpp  path-traced viewport, render settings, GPU reporting
+  jobs.*              job system (thread pool, parallel-for, task groups)
+  polygon.*           n-gon solver: ear-clipping triangulation, weld / T-junction clean-up, tris->quads
+  csg.*               BSP-tree boolean operations
+  bvh.*               bounding volume hierarchy for ray tracing
+  pathtracer.*        render scene build, path tracing, progressive multithreaded CPU renderer
+  gpu_tracer.*        GLSL path tracer, float accumulation, GPU timer queries
+  input_map.*         rebindable actions, Unity / Blender presets, config format
   transform.*         Unity-style Transform API (world get/set, Translate, Rotate, LookAt...)
   profiler.*          scoped CPU profiler (F3 overlay, benchmark)
   image_io.*          PNG writer with its own DEFLATE compressor
 docs/                 screenshots, performance.md, benchmark-report.md
-tests/tests.cpp       unit tests
+tests/tests.cpp       unit tests (+ tests_round5.inc)
 ```
 
-Sample scenes for a quick tour: `Modeler3D --demo 1` (showcase), `--demo 3` (UVs), `--demo 4` (rig).
+Sample scenes for a quick tour: `Modeler3D --demo 1` (showcase), `--demo 3` (UVs), `--demo 4` (rig),
+`--demo 5` (booleans).
