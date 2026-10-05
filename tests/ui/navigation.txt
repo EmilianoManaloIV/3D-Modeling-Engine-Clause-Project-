@@ -1,0 +1,32 @@
+# Navigation without a middle button or F-keys: trackpad scrolls, pinch,
+# Alt+drag variants, on-screen buttons and keyboard orbit / zoom. Each step
+# prints the camera so the log shows that it moved.
+wait 3
+print
+scroll 2 700 450
+print
+pinch -2 700 450
+print
+cmd Toggle trackpad navigation
+expect Trackpad navigation on
+scroll -3 700 450
+hscroll 2 700 450
+print
+pinch -1 700 450
+print
+check
+cmd Toggle trackpad navigation
+drag 700 450 760 470 8 A-
+print
+drag 700 450 760 470 8 left C-A-
+print
+drag 700 450 760 470 8 left S-A-
+print
+hold A-Left 20
+print
+hold = 20
+print
+hold Minus 10
+hold Up 10
+print
+check

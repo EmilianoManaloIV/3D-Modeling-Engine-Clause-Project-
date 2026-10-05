@@ -295,8 +295,7 @@ void Editor::modelPanel(PanelLayout& L) {
         row = L.row(rowH);
         if (btn("csg.tris", cell(row, 0, 2, gap), "Tris out", csgTriangulate_)) csgTriangulate_ = !csgTriangulate_;
         if (btn("csg.keep", cell(row, 1, 2, gap), "Keep cut", csgKeepCutters_)) csgKeepCutters_ = !csgKeepCutters_;
-        note("Select cutters, then");
-        note("the target last.");
+        note("Select the cutters, then the target last.");
     }
     if (section(L, "m.clean", "CLEAN UP", false)) {
         row = L.row(rowH);
@@ -322,8 +321,7 @@ void Editor::texturePanel(PanelLayout& L) {
                 if (ui_.button(uiHash("unwrap", (uint32_t)k), cell(row, c, 2, gap), kNames[k])) unwrapActive(kMethods[k]);
             }
         }
-        note("Object mode: whole mesh.");
-        note("Edit mode: selected faces.");
+        note("Object mode unwraps the whole mesh, Edit mode the selected faces.");
     }
     if (section(L, "t.uvtools", "UV LAYOUT")) {
         row = L.row(rowH);
@@ -337,8 +335,7 @@ void Editor::texturePanel(PanelLayout& L) {
         if (btn("uv.editor", cell(row, 0, 2, gap), "UV editor", uvEditor_)) uvEditor_ = !uvEditor_;
         if (btn("uv.checker", cell(row, 1, 2, gap), "Checker", shading_ == SHADE_CHECKER))
             shading_ = shading_ == SHADE_CHECKER ? SHADE_STUDIO : SHADE_CHECKER;
-        note("Drag selected faces in");
-        note("the UV editor to move UVs.");
+        note("Drag selected faces in the UV editor to move their UVs.");
     }
     if (section(L, "t.mat", "MATERIAL PRESETS")) {
         Object* o = activeMesh();
@@ -364,7 +361,7 @@ void Editor::texturePanel(PanelLayout& L) {
                 setStatus(std::string("Material: ") + p.name);
             }
         }
-        note(o ? "Colour, maps: Properties ->" : "Select a mesh first.");
+        note(o ? "Colour and texture maps: Properties (right)." : "Select a mesh first.");
     }
 }
 
@@ -394,16 +391,13 @@ void Editor::rigPanel(PanelLayout& L) {
         row = L.row(rowH);
         if (btn("rig.parent", cell(row, 0, 2, gap), "Parent")) parentSelected();
         if (btn("rig.unparent", cell(row, 1, 2, gap), "Unparent")) unparentSelected();
-        note("Or drag rows in the list.");
+        note("Or drag rows in the scene list.");
     }
     if (section(L, "r.howto", "HOW TO RIG", false)) {
-        note("1 Add bone; Extrude grows");
-        note("  a chain.");
-        note("2 Select the mesh, Shift+");
-        note("  click the root bone, Bind.");
-        note("3 Pose: Rotate tool (E).");
-        note("4 Weights: Edit mode,");
-        note("  Properties > Skin.");
+        note("1. Add bone; Extrude grows a chain.");
+        note("2. Select the mesh, Shift+click the root bone, Bind.");
+        note("3. Pose with the Rotate tool.");
+        note("4. Weights: Edit mode, Properties > Skin.");
     }
 }
 
@@ -423,8 +417,7 @@ void Editor::lightPanel(PanelLayout& L) {
     if (section(L, "l.world", "WORLD")) {
         label(L, "Ambient light (R G B)", theme::textDim);
         vec3Fields(L, "ambient", 0, scene_.ambient, 0.003f, 0.0f, 1.0f, kRgbColor);
-        note("Emission: a mesh's");
-        note("material (Properties).");
+        note("Glowing objects: Emission in a mesh's material.");
     }
     if (section(L, "l.camera", "CAMERA")) {
         row = L.row(rowH);
@@ -538,7 +531,7 @@ void Editor::renderPanel(PanelLayout& L) {
     }
     for (const std::string& ad : hwrtInfo_.adapters) label(L, ad, theme::textDim);
     for (const std::string& line : gpuReport()) label(L, line, softwareGl_ ? theme::error : theme::textDim);
-    note("F3 = live GPU/CPU stats.");
+    note("F3 or Ctrl+Shift+I: live GPU / CPU stats.");
 }
 
 // ============================================================================
@@ -556,7 +549,7 @@ void Editor::prefsPanel(PanelLayout& L, const Input& in) {
         return;
     }
     row = L.row(rowH);
-    static const char* const tabs[3] = {"Keys", "Navigate", "Interface"};
+    static const char* const tabs[3] = {"Keys", "Nav", "UI"};
     for (int t = 0; t < 3; ++t)
         if (ui_.button(uiHash("prefs.tab", (uint32_t)t), cell(row, t, 3, gap), tabs[t], prefsTab_ == t)) {
             prefsTab_ = t;
@@ -662,19 +655,14 @@ void Editor::prefsPanel(PanelLayout& L, const Input& in) {
             camSet_.trackpad = !camSet_.trackpad;
             configDirty_ = true;
         }
-        note("On: 2-finger scroll orbits,");
-        note("Shift+scroll pans, pinch or");
-        note("Ctrl+scroll zooms.");
+        note("On: two-finger scroll orbits, Shift+scroll pans, pinch or Ctrl+scroll zooms.");
         row = L.row(rowH);
         if (btn("camset.navw", row, "On-screen nav buttons", camSet_.navWidget)) {
             camSet_.navWidget = !camSet_.navWidget;
             configDirty_ = true;
         }
-        note("Alt+drag orbit, Alt+Shift+");
-        note("drag pan, Alt+Ctrl+drag zoom");
-        note("(no middle button needed).");
-        note("Keys: arrows move, Alt+");
-        note("arrows orbit, = / - zoom.");
+        note("Alt+drag orbits, Alt+Shift+drag pans, Alt+Ctrl+drag zooms (no middle button needed).");
+        note("Keys: arrows move, Alt+arrows orbit, = and - zoom.");
         return;
     }
     header("UI SCALE");
@@ -685,17 +673,10 @@ void Editor::prefsPanel(PanelLayout& L, const Input& in) {
             uiScale_ = s;
             configDirty_ = true;
         }
-    note("Smaller = more room on");
-    note("small screens.");
+    note("Smaller gives more room on small screens. Auto also steps down when the window is small.");
     header("SHORTCUT-FREE USE");
-    note("Every command is in the");
-    note("search (top bar or Ctrl+K)");
-    note("and the workspace panels.");
-    note("F-keys and numpad keys");
-    note("all have alternatives:");
-    note("Help Shift+/, Stats Ctrl+");
-    note("Shift+I, Render Ctrl+Shift");
-    note("+R, Shot Ctrl+Shift+P.");
+    note("Every command is in the search (top bar or Ctrl+K) and in the workspace panels.");
+    note("F-keys and numpad keys all have alternatives: Help Shift+/, Stats Ctrl+Shift+I, Render Ctrl+Shift+R, Screenshot Ctrl+Shift+P.");
 }
 
 // ============================================================================
@@ -992,4 +973,77 @@ bool Editor::runNamedCommand(const std::string& name, std::string& matched) {
     matched = commands_[found].name;
     runCommand(found);
     return true;
+}
+
+std::string Editor::runRandomCommand(uint32_t r) {
+    if (commands_.empty()) buildCommands();
+    auto next = [&r] {
+        r ^= r << 13;
+        r ^= r >> 17;
+        r ^= r << 5;
+        return r;
+    };
+    // Finish anything modal first (as a user pressing Enter would).
+    if (opModal_) {
+        opModal_ = false;
+        setStatus("(confirmed)");
+    }
+    if (xf_ != Xform::None) endTransform(next() % 2 == 0);
+    paletteOpen_ = false;
+    // Random selection in edit mode.
+    if (mode_ == Mode::Edit && activeMesh()) {
+        Object* o = activeMesh();
+        syncEditSelection();
+        const int pick = next() % 4;
+        auto& vs = vertSel();
+        std::fill(vs.begin(), vs.end(), 0);
+        if (pick == 0) {
+            std::fill(vs.begin(), vs.end(), 1);
+        } else if (!vs.empty()) {
+            // A few random spots and everything near them (a patch).
+            const int seeds = 1 + next() % 3;
+            for (int k = 0; k < seeds; ++k) {
+                Vec3 c = o->mesh.verts[next() % vs.size()];
+                float rad = 0.05f + (next() % 100) / 100.0f;
+                for (size_t v = 0; v < vs.size(); ++v)
+                    if (length(o->mesh.verts[v] - c) < rad) vs[v] = 1;
+            }
+        }
+        selectionFromVertices();
+        setSelMode((SelMode)(next() % 3));
+        verticesFromSelection();
+    } else if (!scene_.objects.empty() && next() % 3 == 0) {
+        selectOnly((int)(next() % scene_.objects.size()));
+    }
+    // Commands that would leave the app, block on dialogs or are very slow
+    // in a software-rendered test run are skipped.
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        const Command& c = commands_[next() % commands_.size()];
+        const std::string& n = c.name;
+        if (n.rfind("File:", 0) == 0 || n.rfind("Preferences", 0) == 0 || n == "Screenshot" || n == "Help: controls" ||
+            n.find("Render") != std::string::npos || n.find("Subdivide (Catmull") != std::string::npos)
+            continue;
+        if (scene_.triangleCount() > 400000 && (n.find("Smooth") != std::string::npos || n.find("Boolean") != std::string::npos))
+            continue;
+        c.run();
+        // Adjust the last operation like a user dragging its settings.
+        if (lastOpAdjustable() && next() % 2 == 0) {
+            lastOp_.bevel.width = (next() % 100) / 400.0f;
+            lastOp_.bevel.segments = 1 + next() % 4;
+            lastOp_.inset.thickness = (next() % 100) / 400.0f;
+            lastOp_.inset.depth = ((int)(next() % 100) - 50) / 200.0f;
+            lastOp_.loop.cuts = 1 + next() % 4;
+            lastOp_.loop.slide = ((int)(next() % 200) - 100) / 100.0f;
+            lastOp_.cuts = 1 + next() % 3;
+            lastOp_.bridge.segments = 1 + next() % 3;
+            lastOp_.bridge.twist = (int)(next() % 5) - 2;
+            lastOp_.push.depth = (next() % 100) / 200.0f;
+            lastOp_.push.width = (next() % 100) / 500.0f;
+            lastOp_.poke = ((int)(next() % 100) - 50) / 200.0f;
+            applyLastOp();
+        }
+        if (opModal_) opModal_ = false;
+        return n;
+    }
+    return "";
 }

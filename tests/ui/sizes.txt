@@ -1,0 +1,34 @@
+# Screenshots of every workspace, prefs, search, file menu and help at one
+# window size (run with several --size values).
+wait 4
+shot SHOTDIR/ws1_model.png
+key Tab
+key 3
+cmd Select all / none
+cmd Bevel edges / vertices
+type 0.1
+key Enter
+shot SHOTDIR/ws1_edit.png
+key Tab
+key A-2
+shot SHOTDIR/ws2_texture.png
+key A-3
+shot SHOTDIR/ws3_rig.png
+key A-4
+shot SHOTDIR/ws4_light.png
+key A-5
+shot SHOTDIR/ws5_render.png
+key A-1
+cmd Preferences: navigation / trackpad
+shot SHOTDIR/prefs_nav.png
+cmd Preferences: keys
+shot SHOTDIR/prefs_keys.png
+cmd Preferences: UI scale
+key C-K
+type loop
+shot SHOTDIR/search.png
+key Esc
+key S-/
+shot SHOTDIR/help.png
+key Esc
+check

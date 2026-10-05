@@ -195,6 +195,78 @@ traversal is typically several times faster than the GLSL tracer's BVH walk in a
 The tracer submits work without blocking (fences, adaptive rows per submit) and reads back about
 10 times a second, so the UI stays responsive.
 
+## Round 7: new topology tools, stress tests and bottlenecks
+
+Round 7 added tools that create geometry (bevel, loop cut, bridge, push in, punch through ...),
+reworked the UI and then pushed the editor as far as it would go: a 1M-triangle mesh, 5000 objects,
+a bevel re-run every frame (what dragging its Width does), an undo step every frame with ten dense
+meshes in the scene, and the command search typed into every frame (scenarios 12-17 of
+`--benchmark`). The one-shot timings now include every new tool on a 131k-quad sphere.
+
+**Machine for this round:** a 4-core Linux virtual machine **without a GPU** (Mesa llvmpipe runs
+OpenGL on the CPU). The frame times and "GPU time" in [benchmark-report-round7.md](benchmark-report-round7.md)
+are therefore dominated by software rasterisation and are **not comparable** with the Iris Xe tables
+above. The CPU-side sections (mesh tools, undo, picking, overlay building, UI) are what this round
+measured, before and after each fix, on the same machine.
+
+| Bottleneck found | Before | After | Fix |
+|---|---:|---:|---|
+| Punch a hole through a 131k-quad sphere | did not finish in 10 min | 0.22 s | see 1 |
+| Undo step with 10 dense meshes (1.3M quads) in the scene | ~100 ms and ~180 MB copied | 0.02 ms (8-13 ms if one mesh changed) | see 2 |
+| Bevel 10k edges (131k quads) | 839 ms | 272-333 ms | see 3 |
+| Edge loop / edge ring select (131k quads) | 88 / 71 ms | 17-26 / 18 ms | see 4 |
+| Loop cut, one ring / 50 rings (131k quads) | 88 / 175 ms | 29-37 / 52 ms | see 4 |
+| Bridge two 131k-quad spheres | 213 ms | 52-60 ms | see 4 |
+| Mesh clean-up (weld + T-junctions), 131k quads | 477 ms | 213-252 ms | see 5 |
+| Edit-mode overlay while dragging vertices (524k quads) | full rebuild every frame (12.9 ms at 131k quads, ~4x at 524k) | 4.6-5.0 ms | see 6 |
+| Deleting faces in edit mode | emptied other faces (a bug) | correct | see 7 |
+
+1. **Punch through used a BSP Boolean on the whole mesh.** csg.js-style BSP trees degenerate into a
+   chain on smooth (convex) surfaces, so building one is quadratic: minutes for 131k faces, and still
+   minutes when restricted to the ~17k faces in the hole's column. An exact 2D-projection splitter
+   was faster (1.1 s) but sliced the far side into slivers that the welder merged into cracks.
+   The final version: light meshes (up to 3000 faces) still get the exact Boolean cut, which is
+   kept if the result is watertight; dense meshes snap the far side to existing edges (faces whose
+   centre projects inside the outline are removed) and bridge the entry outline to that hole. No
+   splitting means no slivers: the 131k-quad result is closed (0 open edges) in 0.22 s.
+2. **Undo copied every mesh in the scene on every step.** A 131k-quad mesh is about 18 MB in memory
+   (positions, per-face index and UV arrays), so ten of them made each step ~180 MB and 64 steps
+   ~11 GB. Snapshots now share meshes by their content stamp (`Mesh::version`, already bumped by
+   every edit because the renderer relies on it): unchanged meshes are stored once, and undo moves
+   the live mesh back when its stamp matches instead of copying.
+3. **Bevel** scanned every face to merge each corner patch (O(patches x faces)), and kept per-corner
+   state in node-based hash maps. Patches now merge through a vertex-indexed table, the per-vertex
+   state lives in flat arrays, and the hole search only looks at rebuilt faces.
+4. **Half-edge tables** (used by loops, rings, loop cut, bridge, bevel) were `std::unordered_map`s with
+   one node per face corner (520k at 131k quads). A flat open-addressing table builds about 3x faster.
+5. **Clean-up** (used by booleans and punch through) bucketed points in a hash map of small vectors,
+   with cells sized to the whole mesh. A compact grid (one sorted array + a cell table), cells sized
+   to the average edge length, and a weld that only searches neighbouring cells when a point is
+   within `eps` of a cell border, halve it.
+6. **The edit overlay** (edges, vertex dots, face fills) was rebuilt from scratch whenever a vertex
+   moved. It now records which buffer entries show each vertex and, while topology and selection are
+   unchanged, patches only the entries of vertices that moved.
+7. **A correctness bug found by the new tests**: edit-mode face deletion compacted the face list with
+   `faces[w] = std::move(faces[f])`, and for `w == f` a self move-assignment empties the vector, so
+   every face before the first deleted one lost its corners. All face removal now goes through one
+   function that skips self-moves (and has a regression test).
+
+**Usability stress tests.** The `--script` player (`src/script.h`) replays synthetic input in the real
+editor. `tests/ui/fuzz.txt` ran 6200 frames of random clicks, drags, keys, scrolls and pinches across
+every workspace, then 1200 random tool commands (random selections, random last-operation settings,
+undo and redo), checking after every frame that every mesh index is in range, there are no NaNs,
+UVs and weights match the topology, the hierarchy has no cycles and the camera is finite: no
+failures. `pipeline.txt` (all five stages with the keyboard and search only, then save and reload)
+and `navigation.txt` (trackpad scroll, pinch, Alt + drag, keyboard orbit and zoom) pass on Linux and
+on the Windows build under Wine. `sizes.txt` screenshots every workspace from 800x600 to 1920x1080;
+those screenshots led to wrapping panel hints, shorter labels on narrow windows and an automatic UI
+scale step-down.
+
+**What is left at these sizes.** With 1M triangles, rebuilding the render mesh after a drag (smooth
+normals, 70 ms) is now the largest CPU cost per frame; a positions-only update path would remove most
+of it. Re-running a bevel on a 131k-quad mesh every frame costs ~95 ms (copying the original mesh,
+building the half-edge table), so dragging its width on very dense meshes is not real-time yet.
+
 ## Known remaining costs
 
 - **Picking BVH rebuilds** after every edit of a dense mesh (80 ms at 262k triangles), on the first
@@ -203,7 +275,9 @@ The tracer submits work without blocking (fences, adaptive rows per submit) and 
   mipmap generation.
 - **Live render restarts** rebuild the BVH and re-upload the scene on every change (e.g. each frame
   of a drag). That takes a few ms for normal scenes and about 70 ms at 262k triangles.
-- **Undo snapshots** copy the whole scene (11 ms with a 131k-quad mesh). A command/delta-based undo
-  would remove this.
+- **Undo snapshots** copy the objects and every *changed* mesh (unchanged meshes are shared since
+  round 7). A command/delta-based undo would also avoid copying a big mesh after a small edit.
+- **Render mesh rebuilds** after vertex drags recompute smooth normals and indexing for the whole
+  mesh (70 ms at 1M triangles).
 - **Particles and dense meshes are GPU-bound** on the integrated GPU. MSAA 4x and the 1728x1020
   viewport dominate.

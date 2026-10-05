@@ -69,7 +69,6 @@ void ScriptPlayer::fuzzFrame(Input& in, int w, int h) {
     // Release whatever was held last frame with some probability.
     for (int b = 0; b < 3; ++b)
         if (fuzzHeld_[b] && next() % 4 == 0) in.onMouseButton(b, false), fuzzHeld_[b] = false;
-    if (fuzzKeyHeld_ && next() % 3 == 0) in.onKey(fuzzKeyHeld_, false), fuzzKeyHeld_ = 0;
     // Mouse motion: mostly small moves, sometimes jumps.
     float x = in.mouseX, y = in.mouseY;
     if (next() % 8 == 0) x = (float)(next() % (uint32_t)w), y = (float)(next() % (uint32_t)h);
@@ -232,6 +231,15 @@ bool ScriptPlayer::runLine(const std::string& line, Input& in, Editor& ed, int w
         rng_ = seed ? seed * 2654435761u : 1;
         return false;
     }
+    if (cmd == "fuzzcmd") {
+        int n = 100;
+        uint32_t seed = 1;
+        args >> n >> seed;
+        fuzzCmdLeft_ = std::max(1, n);
+        fuzzCmdCount_ = 0;
+        rng_ = seed ? seed * 2654435761u : 1;
+        return false;
+    }
     if (cmd == "check") {
         std::string err;
         if (!ed.checkInvariants(err)) fail("invariant: " + err);
@@ -270,7 +278,6 @@ bool ScriptPlayer::step(Input& in, Editor& ed, int w, int h) {
             // Let go of everything and close any modal state.
             for (int b = 0; b < 3; ++b)
                 if (fuzzHeld_[b]) in.onMouseButton(b, false), fuzzHeld_[b] = false;
-            if (fuzzKeyHeld_) in.onKey(fuzzKeyHeld_, false), fuzzKeyHeld_ = 0;
             setMods(in, false, false, false);
             std::printf("fuzz: %llu frames of random input, scene: %s\n", (unsigned long long)fuzzEvents_,
                         ed.summary().c_str());
@@ -278,10 +285,25 @@ bool ScriptPlayer::step(Input& in, Editor& ed, int w, int h) {
         }
         return true;
     }
+    if (fuzzCmdLeft_ > 0) {
+        --fuzzCmdLeft_;
+        ++fuzzCmdCount_;
+        const std::string name = ed.runRandomCommand(next());
+        std::string err;
+        if (!ed.checkInvariants(err)) {
+            fail("after \"" + name + "\": " + err);
+            fuzzCmdLeft_ = 0;
+        }
+        if (fuzzCmdLeft_ == 0) {
+            std::printf("fuzzcmd: %d random commands, scene: %s\n", fuzzCmdCount_, ed.summary().c_str());
+            std::fflush(stdout);
+        }
+        return true;
+    }
     if (wait_ > 0 && --wait_ > 0) return true;
     while (pc_ < lines_.size()) {
         if (!runLine(lines_[pc_++], in, ed, w, h)) return true;
-        if (fuzzLeft_ > 0) return true;
+        if (fuzzLeft_ > 0 || fuzzCmdLeft_ > 0) return true;
     }
     return wait_ > 0 || !queue_.empty();
 }

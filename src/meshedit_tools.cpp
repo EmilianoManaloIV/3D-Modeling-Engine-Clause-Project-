@@ -1149,19 +1149,40 @@ bool pushIn(Mesh& m, const std::vector<int>& faces, const PushParams& p, std::ve
         error = "Select faces to push in";
         return false;
     }
+    // Region normal (area weighted). A closed or strongly curved selection
+    // (e.g. every face of a cube) has none: push each face in on its own.
+    Vec3 n, absSum;
+    for (int f : faces) {
+        Vec3 fn = faceNormalRaw(m, m.faces[f]);
+        n += fn;
+        absSum += Vec3(std::fabs(fn.x), std::fabs(fn.y), std::fabs(fn.z));
+    }
+    const bool individual = length(n) < 0.5f * length(absSum) * 0.5f;
+    n = normalize(n);
+    if (individual && p.through) {
+        error = "Punch: the selected faces point in different directions - select faces on one side";
+        return false;
+    }
     std::vector<int> inner = faces;
     if (p.width > 0.0f) {
         InsetParams ip;
         ip.thickness = p.width;
+        ip.individual = individual;
         if (!insetFaces(m, faces, ip, inner, vsel)) return false;
     }
-    // Region normal (area weighted).
-    Vec3 n;
-    for (int f : inner) n += faceNormalRaw(m, m.faces[f]);
-    n = normalize(n);
-    if (length(n) < 0.5f) {
-        error = "Push: the selected faces have no common direction";
-        return false;
+    if (individual) {
+        for (int f : inner) {
+            Vec3 fn = normalize(faceNormalRaw(m, m.faces[f]));
+            std::vector<char> one;
+            Vec3 en;
+            if (!extrudeFaces(m, {f}, one, &en)) continue;
+            for (size_t v = 0; v < one.size(); ++v)
+                if (one[v]) m.verts[v] -= fn * p.depth;
+        }
+        selectFaceVerts(m, inner, vsel);
+        innerFaces = inner;
+        m.touch();
+        return true;
     }
     if (!p.through) {
         Vec3 en;

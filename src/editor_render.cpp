@@ -360,8 +360,10 @@ void Editor::renderViewport() {
         for (char c : fsel_) selHash = (selHash ^ (uint8_t)c) * 1099511628211ull;
         for (const auto& e : esel_) selHash = (selHash ^ (uint64_t)(e.first * 31 + e.second)) * 1099511628211ull;
         selHash ^= (uint64_t)selMode_ * 0x51ED27F1ull;
+        const uint64_t structure = (o.mesh.topology * 0x9E3779B97F4A7C15ull) ^ selHash ^ ((uint64_t)o.id << 40);
         const uint64_t key = (o.mesh.version * 0x9E3779B97F4A7C15ull) ^ selHash ^ ((uint64_t)o.id << 40);
-        if (key != editOverlayKey_) {
+        if (structure != editStructKey_ || editPosCache_.size() != o.mesh.verts.size()) {
+            PROF_SCOPE("edit overlay (rebuild)");
             const Color dark{0.05f, 0.05f, 0.07f, 1};
             // Which edges are drawn as selected depends on the mode.
             std::unordered_set<uint64_t> selEdges;
@@ -377,6 +379,10 @@ void Editor::renderViewport() {
                     }
                 }
             }
+            // Every buffer entry that shows a vertex position is recorded per
+            // vertex (CSR lists), so a drag can update just what moved.
+            const size_t nv = o.mesh.verts.size();
+            std::vector<int> count(nv + 1, 0);
             editLines_.clear();
             editLines_.reserve(editEdges_.size() * 2);
             for (auto [a, b] : editEdges_) {
@@ -385,12 +391,13 @@ void Editor::renderViewport() {
                 Color c = on ? theme::selection : kEdgeDark;
                 editLines_.push_back({o.mesh.verts[a], c});
                 editLines_.push_back({o.mesh.verts[b], c});
+                count[a]++, count[b]++;
             }
             editPoints_.clear();
             editFill_.clear();
             if (selMode_ == SelMode::Vertex) {
-                editPoints_.reserve(o.mesh.verts.size());
-                for (size_t v = 0; v < o.mesh.verts.size(); ++v)
+                editPoints_.reserve(nv);
+                for (size_t v = 0; v < nv; ++v)
                     editPoints_.push_back({o.mesh.verts[v], sel[v] ? theme::selection : dark});
             } else if (selMode_ == SelMode::Face) {
                 const Color fill = withAlpha(theme::selection, 0.28f);
@@ -403,7 +410,63 @@ void Editor::renderViewport() {
                         editFill_.push_back({o.mesh.verts[face[0]], fill});
                         editFill_.push_back({o.mesh.verts[face[i]], fill});
                         editFill_.push_back({o.mesh.verts[face[i + 1]], fill});
+                        count[face[0]]++, count[face[i]]++, count[face[i + 1]]++;
                     }
+                }
+            }
+            // Slots: line entries (>= 0) and fill entries (encoded as -1 - index).
+            editSlotStart_.assign(nv + 1, 0);
+            for (size_t v = 0; v < nv; ++v) editSlotStart_[v + 1] = editSlotStart_[v] + count[v];
+            editSlots_.assign(editSlotStart_[nv], 0);
+            std::vector<int> fillAt(editSlotStart_.begin(), editSlotStart_.end() - 1);
+            for (size_t k = 0; k < editEdges_.size(); ++k) {
+                editSlots_[fillAt[editEdges_[k].first]++] = (int)(2 * k);
+                editSlots_[fillAt[editEdges_[k].second]++] = (int)(2 * k + 1);
+            }
+            if (selMode_ == SelMode::Face) {
+                int t = 0;
+                for (size_t f = 0; f < o.mesh.faces.size(); ++f) {
+                    if (!(f < fsel_.size() && fsel_[f])) continue;
+                    const auto& face = o.mesh.faces[f];
+                    for (size_t i = 1; i + 1 < face.size(); ++i) {
+                        editSlots_[fillAt[face[0]]++] = -1 - t++;
+                        editSlots_[fillAt[face[i]]++] = -1 - t++;
+                        editSlots_[fillAt[face[i + 1]]++] = -1 - t++;
+                    }
+                }
+            }
+            editPosCache_ = o.mesh.verts;
+            editStructKey_ = structure;
+            editOverlayKey_ = key;
+        } else if (key != editOverlayKey_) {
+            // Same topology and selection, vertices moved (a drag): patch only
+            // the entries of the vertices whose position changed.
+            PROF_SCOPE("edit overlay (patch)");
+            std::vector<char> moved;
+            if (selMode_ == SelMode::Face) moved.assign(o.mesh.verts.size(), 0);
+            bool anyMoved = false;
+            for (size_t v = 0; v < o.mesh.verts.size(); ++v) {
+                const Vec3 p = o.mesh.verts[v];
+                const Vec3 q = editPosCache_[v];
+                if (p.x == q.x && p.y == q.y && p.z == q.z) continue;
+                editPosCache_[v] = p;
+                anyMoved = true;
+                if (!moved.empty()) moved[v] = 1;
+                for (int k = editSlotStart_[v]; k < editSlotStart_[v + 1]; ++k) {
+                    int slot = editSlots_[k];
+                    if (slot >= 0) editLines_[slot].pos = p;
+                    else editFill_[-1 - slot].pos = p;
+                }
+                if (selMode_ == SelMode::Vertex) editPoints_[v].pos = p;
+            }
+            if (anyMoved && selMode_ == SelMode::Face) {
+                // Face centres: recompute the faces with a moved corner.
+                for (size_t f = 0; f < o.mesh.faces.size(); ++f) {
+                    for (int v : o.mesh.faces[f])
+                        if (moved[v]) {
+                            editPoints_[f].pos = faceCenter(o.mesh, o.mesh.faces[f]);
+                            break;
+                        }
                 }
             }
             editOverlayKey_ = key;

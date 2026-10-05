@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 
 using namespace ed;
 
@@ -66,6 +67,7 @@ bool Editor::init(const AppOptions& options, std::string& error) {
     configPath_ = options.configPath;
     loadConfig();
     benchReport_ = options.benchmarkReport;
+    benchOnly_ = options.benchmarkOnly;
     benchScenario_ = benchReport_.empty() ? -1 : 0;
     fontScale_ = std::max(1, (int)(dpi_ * 2.0f + 0.25f));
     buildGrid();
@@ -382,7 +384,8 @@ std::string Editor::summary() const {
         s += " active=\"" + o.name + "\"";
         if (o.isMesh()) s += strf(" verts=%d faces=%d", (int)o.mesh.verts.size(), (int)o.mesh.faces.size());
     }
-    s += strf(" undo=%d tris=%d | %s", (int)undo_.size(), (int)scene_.triangleCount(), status_.c_str());
+    s += strf(" undo=%d tris=%d cam=(yaw %.1f pitch %.1f dist %.2f) | %s", (int)undo_.size(), (int)scene_.triangleCount(),
+              cam_.yaw, cam_.pitch, cam_.distance, status_.c_str());
     return s;
 }
 
@@ -543,6 +546,7 @@ bool Editor::beginTransform(Xform type, bool pushUndoState, bool fromGizmo) {
     worldToScreen(xfPivot_, ps);
     xfPrevAngle_ = std::atan2(-(mouse_.y - ps.y), mouse_.x - ps.x);
     xfAngle_ = 0;
+    opTyped_.clear();
     lmbInViewport_ = boxSelecting_ = false;
     nav_ = Nav::None;
     if (!fromGizmo) updateTransform(Input());
@@ -596,6 +600,10 @@ float Editor::axisDrag(Vec3 pivot, Vec3 axis, Vec2 delta) const {
 
 void Editor::updateTransform(const Input& in) {
     const bool snap = in.ctrl();
+    // A typed value (Blender style: G X 2 Enter) overrides the mouse.
+    float typed = 0;
+    const bool hasTyped = !opTyped_.empty() && opTyped_ != "-" && opTyped_ != "." &&
+                          (typed = std::strtof(opTyped_.c_str(), nullptr), true);
     const Vec2 d = mouse_ - xfStart_;
     const Vec3 axis = xfAxis_ < 0 ? Vec3() : (xfAxis_ < 3 ? axisVector(xfAxis_) : xfCustomAxis_);
     const char* axisLabel = xfAxis_ < 0   ? ""
@@ -605,7 +613,9 @@ void Editor::updateTransform(const Input& in) {
                                            : "along normal";
     XfDelta delta;
     if (xf_ == Xform::Grab) {
-        if (xfAxis_ < 0) {
+        if (hasTyped) {
+            delta.move = (xfAxis_ < 0 ? Vec3(1, 0, 0) : axis) * typed;  // no axis: along X
+        } else if (xfAxis_ < 0) {
             // Free move in the view plane, scaled so the item tracks the cursor.
             float k = worldPerPixel(xfPivot_);
             delta.move = camRight() * (d.x * k) - camUp() * (d.y * k);
@@ -624,8 +634,8 @@ void Editor::updateTransform(const Input& in) {
         float a = std::atan2(-(mouse_.y - ps.y), mouse_.x - ps.x);
         xfAngle_ += wrapRadians(a - xfPrevAngle_);
         xfPrevAngle_ = a;
-        float deg = toDegrees(xfAngle_);
-        if (snap) deg = std::round(deg / 15.0f) * 15.0f;
+        float deg = hasTyped ? typed : toDegrees(xfAngle_);
+        if (snap && !hasTyped) deg = std::round(deg / 15.0f) * 15.0f;
         Vec3 towardViewer = -camForward();
         delta.rotAxis = xfAxis_ < 0 ? towardViewer : axis;
         // Keep the rotation following the cursor even when the axis points away.
@@ -637,8 +647,8 @@ void Editor::updateTransform(const Input& in) {
         // Reference distance from the pivot; floored so starting right on the
         // pivot doesn't make the scale explode.
         float d0 = std::max(length(xfStart_ - ps), 40.0f * dpi_);
-        float f = length(mouse_ - ps) / d0;
-        if (snap) f = std::round(f * 10.0f) / 10.0f;
+        float f = hasTyped ? typed : length(mouse_ - ps) / d0;
+        if (snap && !hasTyped) f = std::round(f * 10.0f) / 10.0f;
         if (xfAxis_ < 0) {
             delta.scale = {f, f, f};
         } else if (xfAxis_ < 3) {
@@ -656,6 +666,7 @@ void Editor::updateTransform(const Input& in) {
         }
         xfInfo_ = strf("Scale %s  x%.3f", axisLabel, f);
     }
+    if (!opTyped_.empty()) xfInfo_ += "   [typed: " + opTyped_ + "]";
     applyTransform(delta);
 }
 
@@ -862,6 +873,9 @@ void Editor::handleViewport(const Input& in) {
         const input::Action axisKeys[3] = {input::Action::AxisX, input::Action::AxisY, input::Action::AxisZ};
         for (int a = 0; a < 3; ++a)
             if (keys_.pressed(axisKeys[a], in)) xfAxis_ = xfAxis_ == a ? -1 : a;
+        for (char ch : in.text)
+            if ((ch >= '0' && ch <= '9') || ch == '.' || (ch == '-' && opTyped_.empty())) opTyped_ += ch;
+        if (in.keyRepeat[KEY_BACKSPACE] && !opTyped_.empty()) opTyped_.pop_back();
         if (in.mousePressed[MOUSE_LEFT] || in.pressed(KEY_ENTER) || in.pressed(KEY_SPACE)) {
             updateTransform(in);
             endTransform(true);

@@ -707,6 +707,10 @@ void Editor::importObj() {
 // ============================================================================
 // Sample scenes (also used for automated screenshots: --demo N)
 // ============================================================================
+namespace {
+bool near3(Vec3 a, Vec3 b) { return length(a - b) < 1e-3f; }
+}  // namespace
+
 void Editor::buildDemo(int which) {
     auto shape = [&](int s, const char* name, int color, Vec3 pos, Vec3 rot = Vec3()) {
         Object o;
@@ -899,6 +903,101 @@ void Editor::buildDemo(int which) {
             cam_.pitch = 28;
             break;
         }
+        case 7: {  // modeling tools: bevel, push in, punch through, bridge, loop cuts
+            int ground = shape(PS_Plane, "Ground", 8, {0, -0.01f, 0});
+            setParam(ground, {40, 30, 1, 1});
+            auto add = [&](Mesh m, const char* name, int color, Vec3 pos) {
+                Object o;
+                o.name = name;
+                o.mesh = std::move(m);
+                o.mesh.touch();
+                o.color = kPalette[color];
+                o.position = pos;
+                o.roughness = 0.35f;
+                return scene_.addObject(std::move(o));
+            };
+            auto facesWhere = [](const Mesh& m, auto pred) {
+                std::vector<int> out;
+                for (int f = 0; f < (int)m.faces.size(); ++f)
+                    if (pred(faceCenter(m, m.faces[f]), normalize(faceNormalRaw(m, m.faces[f])))) out.push_back(f);
+                return out;
+            };
+            std::vector<int> nf;
+            std::vector<char> vs;
+            std::vector<meshedit::Edge> ne;
+            std::string err;
+            // Rounded bevel on every edge.
+            Mesh bev = primitives::cube(1.8f);
+            meshedit::BevelParams bp;
+            bp.width = 0.25f;
+            bp.segments = 4;
+            std::vector<meshedit::Edge> all = uniqueEdges(bev);
+            meshedit::bevel(bev, all, {}, bp, nf, vs);
+            for (Vec3& v : bev.verts) v.y += 0.9f;
+            add(bev, "Bevel", 1, {-6.0f, 0, 0});
+            // Inset + push in on the top and the front: pockets with walls.
+            Mesh pocket = primitives::box(2.2f, 1.6f, 2.2f, 1);
+            meshedit::PushParams pp;
+            pp.width = 0.3f;
+            pp.depth = 0.45f;
+            meshedit::pushIn(pocket, facesWhere(pocket, [](Vec3, Vec3 n) { return n.y > 0.9f; }), pp, nf, vs, err);
+            pp.depth = 0.25f;
+            meshedit::pushIn(pocket, facesWhere(pocket, [](Vec3 c, Vec3 n) { return n.z > 0.9f && c.z > 1.0f; }), pp, nf, vs, err);
+            for (Vec3& v : pocket.verts) v.y += 0.8f;
+            add(pocket, "Push in", 2, {-3.0f, 0, 0});
+            // A slab with a hole punched straight through.
+            Mesh slab = primitives::box(2.6f, 0.5f, 2.6f, 1);
+            meshedit::InsetParams ip;
+            ip.thickness = 0.7f;
+            std::vector<int> inner;
+            meshedit::insetFaces(slab, facesWhere(slab, [](Vec3, Vec3 n) { return n.y > 0.9f; }), ip, inner, vs);
+            meshedit::punchThrough(slab, inner, Vec3(0, 1, 0), vs, err);
+            for (Vec3& v : slab.verts) v.y += 0.25f;
+            add(slab, "Punched", 4, {0.2f, 0, 0});
+            // Two balls joined, then bridged across their facing caps.
+            Mesh dumbbell = primitives::uvSphere(0.75f, 24, 12);
+            meshedit::appendMesh(dumbbell, primitives::uvSphere(0.75f, 24, 12), translation({2.6f, 0, 0}));
+            std::vector<int> caps = facesWhere(dumbbell, [](Vec3 c, Vec3 n) {
+                return (c.x > 0.55f && c.x < 1.3f && n.x > 0.7f) || (c.x > 1.3f && c.x < 2.05f && n.x < -0.7f);
+            });
+            meshedit::BridgeParams br;
+            br.segments = 4;
+            meshedit::bridgeFaces(dumbbell, caps, br, nf, vs, err);
+            for (Vec3& v : dumbbell.verts) v += Vec3(-1.3f, 0.75f, 0);
+            int di = add(dumbbell, "Bridged", 3, {3.6f, 0, 0.3f});
+            scene_.objects[di].smooth = true;
+            // Loop cuts: a cylinder cut into rings, the middle rings pushed out.
+            Mesh vase = primitives::cylinder(0.7f, 2.4f, 24);
+            int seedA = -1, seedB = -1;
+            for (int v = 0; v < (int)vase.verts.size(); ++v) {
+                if (near3(vase.verts[v], Vec3(0, 1.2f, 0.7f))) seedA = v;
+                if (near3(vase.verts[v], Vec3(0, -1.2f, 0.7f))) seedB = v;
+            }
+            if (seedA >= 0 && seedB >= 0) {
+                meshedit::LoopCutParams lp;
+                lp.cuts = 5;
+                meshedit::loopCut(vase, {meshedit::makeEdge(seedA, seedB)}, lp, ne, vs);
+                for (Vec3& v : vase.verts) {
+                    float r = std::sqrt(v.x * v.x + v.z * v.z);
+                    if (r < 1e-4f) continue;
+                    float k = 1.0f + 0.45f * std::cos(v.y * 1.6f);
+                    v.x *= k, v.z *= k;
+                }
+            }
+            for (Vec3& v : vase.verts) v.y += 1.2f;
+            int vi = add(vase, "Loop cuts", 6, {7.0f, 0, 0});
+            scene_.objects[vi].smooth = true;
+            light(LightType::Sun, "Sun", {-2, 7, 2}, {-50, 30, 0}, {1.0f, 0.96f, 0.9f}, 1.6f);
+            light(LightType::Point, "Fill", {2, 4, 5}, {}, {0.6f, 0.75f, 1.0f}, 14);
+            scene_.ambient = {0.06f, 0.065f, 0.08f};
+            selectOnly(-1);
+            shading_ = SHADE_LIT;
+            cam_.target = {0.6f, 0.4f, 0.8f};
+            cam_.distance = 19.5f;
+            cam_.yaw = 12;
+            cam_.pitch = 30;
+            break;
+        }
         case 6: {  // materials: PBR textures, glass, metals, alpha, area light, physical camera
             auto setTex = [&](int i, const char* set, bool ao, Vec2 tiling) {
                 Object& o = scene_.objects[i];
@@ -1024,7 +1123,7 @@ void Editor::addCamera() {
     o.boneLength = 0.5f;
     alignCameraToView(o);
     int i = addObject(std::move(o), "Added");
-    if (i >= 0) setStatus("Added a camera at the current view - the Render tab renders through it");
+    if (i >= 0) setStatus("Added a camera at the current view - the Render workspace renders through it");
 }
 
 void Editor::lookThroughCamera() {

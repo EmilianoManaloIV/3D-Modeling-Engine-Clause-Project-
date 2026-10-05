@@ -33,6 +33,7 @@ struct AppOptions {
     int demo = 0;  // 0 = default scene, 1..4 = sample scenes (for screenshots)
     bool showHelp = false;
     std::string benchmarkReport;  // non-empty: run the performance benchmark and exit
+    std::vector<int> benchmarkOnly;  // scenario numbers (1-based) to run; empty = all, plus the one-shot timings
     std::string configPath;       // settings file (keymap); empty = don't persist
     // --render <out.png>: path-trace the scene, save it (+ a .txt report) and exit.
     std::string renderOut;
@@ -95,6 +96,8 @@ public:
     bool checkInvariants(std::string& error) const;  // scene, meshes, selection and camera are sane
     std::string summary() const;                      // one line: mode, objects, active mesh size, status
     const std::string& statusText() const { return status_; }
+    // Random selection + a random command (stress testing). Returns its name.
+    std::string runRandomCommand(uint32_t seed);
 
 private:
     enum class Mode { Object, Edit };
@@ -488,6 +491,8 @@ private:
 
     // benchmark
     std::string benchReport_;
+    std::vector<int> benchOnly_;
+    bool skipScenarioStats_ = false;
     int benchScenario_ = -1, benchFrame_ = 0;
     std::string benchText_;
 
@@ -518,7 +523,6 @@ private:
     bool navFromWidget_ = false;  // the current orbit / pan / zoom drag started on the nav buttons
     int navHover_ = -1;
     int uiScale_ = 0;  // 0 = automatic (from the display DPI), else 1..4
-    int lastWheelPan_ = 0;
     float leftScroll_ = 0, rightScroll_ = 0, outlinerScroll_ = 0;
     float leftContentH_ = 0, rightContentH_ = 0;
 
@@ -599,5 +603,8 @@ private:
     uint64_t editEdgesVersion_ = ~0ull;  // topology stamp the edge list was built from
     std::vector<LineVertex> editLines_, editPoints_;
     uint64_t editOverlayKey_ = ~0ull;
+    uint64_t editStructKey_ = ~0ull;           // topology + selection the overlay buffers were built for
+    std::vector<int> editSlotStart_, editSlots_;  // vertex -> overlay entries showing it (CSR)
+    std::vector<Vec3> editPosCache_;             // positions the overlay buffers hold
     std::vector<Vec3> scratch_;
 };

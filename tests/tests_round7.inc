@@ -281,6 +281,18 @@ static void testBridgeFillPush() {
     CHECK(meshedit::pushIn(pocket, facesWhere(pocket, [](Vec3 v) { return v.y > 0.9f; }), pp, inner, vsel, err));
     CHECK(closedAndConsistent(pocket) && inner.size() == 1);
     CHECK(near(signedVolume(pocket), 8.0f - 1.5f * 1.5f * 0.5f, 1e-3f));
+    // Pushing every face of a closed mesh: each face goes in along its own normal.
+    Mesh allIn = primitives::cube(2);
+    meshedit::PushParams pa;
+    pa.width = 0.2f;
+    pa.depth = 0.3f;
+    std::vector<int> every = {0, 1, 2, 3, 4, 5};
+    CHECK(meshedit::pushIn(allIn, every, pa, inner, vsel, err));
+    CHECK(closedAndConsistent(allIn) && inner.size() == 6);
+    CHECK(near(signedVolume(allIn), 8.0f - 6 * 1.6f * 1.6f * 0.3f, 1e-3f));
+    pa.through = true;
+    Mesh allPunch = primitives::cube(2);
+    CHECK(!meshedit::pushIn(allPunch, every, pa, inner, vsel, err) && !err.empty());
     // Punch through: a square hole all the way through.
     Mesh punched = primitives::cube(2);
     pp.through = true;

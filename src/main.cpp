@@ -5,11 +5,12 @@
 // each frame pumps OS events, updates, renders and swaps; tear down in reverse.
 //
 // Usage: Modeler3D [scene.m3d | model.obj]
-// Testing flags: --demo <0-6>   build a sample scene (5 = booleans, 6 = materials)
+// Testing flags: --demo <0-7>   build a sample scene (5 = booleans, 6 = materials, 7 = modeling tools)
 //                --screenshot <file.png>   render a few frames, save, exit
 //                --benchmark <report.md>   run the performance scenarios, write a report, exit
 //                --frames <n>   frames to run before --screenshot (default 6)
 //                --threads <n>  CPU worker threads (default: all hardware threads)
+//                --only <n,m,...>  with --benchmark: run only these scenarios
 //                --size <w>x<h> window size (default 1360x860)
 //                --script <file>  replay scripted input (see script.h), exit when done;
 //                               the exit code is the number of failed checks
@@ -50,6 +51,13 @@ int main(int argc, char** argv) {
         else if (a == "--help-overlay") options.showHelp = true;
         else if (a == "--benchmark" && i + 1 < argc) options.benchmarkReport = argv[++i];
         else if (a == "--script" && i + 1 < argc) scriptPath = argv[++i];
+        else if (a == "--only" && i + 1 < argc) {  // --benchmark r.md --only 5,13
+            for (const char* p = argv[++i]; *p;) {
+                options.benchmarkOnly.push_back(std::atoi(p));
+                while (*p && *p != ',') ++p;
+                if (*p == ',') ++p;
+            }
+        }
         else if (a == "--size" && i + 1 < argc) {
             int w = 0, h = 0;
             if (std::sscanf(argv[++i], "%dx%d", &w, &h) == 2 && w >= 320 && h >= 240) winW = w, winH = h;

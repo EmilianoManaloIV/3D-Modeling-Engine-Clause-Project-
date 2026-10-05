@@ -7,6 +7,7 @@
 #include "editor_internal.h"
 #include "csg.h"
 #include "polygon.h"
+#include "meshedit.h"
 #include "pathtracer.h"
 #include "jobs.h"
 #include "gl.h"
@@ -37,6 +38,12 @@ const char* const kScenarioNames[] = {
     "Lit view: dense mesh + 8 point lights",
     "Picking: 50 click-selects per frame, 1000 objects",
     "Gizmo drag: rotating 200 objects with the Rotate handle",
+    "Stress: 1M-triangle mesh (524k quads), selected",
+    "Stress: 1M-triangle mesh, edit mode, dragging 10% of the vertices",
+    "Stress: 5000 objects in hierarchies (outliner + picking)",
+    "Stress: re-running a bevel every frame (adjusting its width), 131k quads",
+    "Stress: an undo step every frame, 10 dense meshes in the scene",
+    "Stress: command search typing + workspace switching every frame",
 };
 constexpr int kScenarioCount = (int)(sizeof kScenarioNames / sizeof kScenarioNames[0]);
 
@@ -57,6 +64,13 @@ void Editor::clearForBenchmark() {
     shading_ = SHADE_STUDIO;
     playing_ = true;
     wireframe_ = uvEditor_ = false;
+    lastOp_ = MeshOp();
+    opModal_ = paletteOpen_ = prefsOpen_ = false;
+    selMode_ = SelMode::Vertex;
+    esel_.clear();
+    fsel_.clear();
+    workspace_ = WS_MODEL;
+    meshAccel_.clear();
 }
 
 void Editor::benchmarkSetup(int s) {
@@ -148,6 +162,52 @@ void Editor::benchmarkSetup(int s) {
             manyObjects(200, true);
             cam_.distance = 60;
             break;
+        case 11:
+        case 12: {
+            int i = scene_.add(catmullClark(catmullClark(primitives::uvSphere(1.5f, 256, 128))), "Huge", kPalette[4]);
+            selectOnly(i);
+            cam_.distance = 6;
+            if (s == 12) {
+                mode_ = Mode::Edit;
+                const Mesh& m = scene_.objects[i].mesh;
+                vsel_.assign(m.verts.size(), 0);
+                for (size_t v = 0; v < m.verts.size(); ++v) vsel_[v] = m.verts[v].y > 1.2f;  // the top cap
+            }
+            break;
+        }
+        case 13:
+            manyObjects(5000, false);
+            cam_.distance = 250;
+            break;
+        case 14: {
+            int i = denseSphere("Dense");
+            cam_.distance = 6;
+            mode_ = Mode::Edit;
+            selMode_ = SelMode::Edge;
+            const Mesh& m = scene_.objects[i].mesh;
+            vsel_.assign(m.verts.size(), 0);
+            esel_.clear();
+            for (const auto& e : uniqueEdges(m))  // one ring of edges around the equator
+                if (std::fabs(m.verts[e.first].y) < 0.02f && std::fabs(m.verts[e.second].y) < 0.02f) esel_.push_back(e);
+            selTopology_ = m.topology;
+            selObject_ = scene_.objects[i].id;
+            fsel_.assign(m.faces.size(), 0);
+            verticesFromSelection();
+            bevelDefaults_.width = 0.01f;
+            startMeshOp(OpType::Bevel, false);
+            break;
+        }
+        case 15:
+            for (int k = 0; k < 10; ++k) {
+                int i = scene_.add(catmullClark(primitives::uvSphere(0.5f, 128, 64)), "Dense", kPalette[1 + k % 9]);
+                scene_.objects[i].position = {(float)(k % 5) * 1.2f - 2.4f, 0, (float)(k / 5) * 1.2f};
+            }
+            selectOnly(0);
+            cam_.distance = 8;
+            break;
+        case 16:
+            buildDemo(1);
+            break;
         default: break;
     }
     updateMatrices();
@@ -179,6 +239,50 @@ void Editor::benchmarkFrame(int s, int frame) {
             }
             break;
         }
+        case 12: {  // drag the selected cap up and down (mesh rebuild every frame)
+            Object* o = activeMesh();
+            if (!o) break;
+            const float dy = 0.002f * std::sin(frame * 0.2f);
+            for (size_t v = 0; v < o->mesh.verts.size(); ++v)
+                if (vsel_[v]) o->mesh.verts[v].y += dy;
+            o->mesh.touchPositions();
+            break;
+        }
+        case 13: {
+            PROF_SCOPE("picking (10 rays)");
+            uint32_t r = 777u + (uint32_t)frame * 7919u;
+            for (int k = 0; k < 10; ++k) {
+                r = r * 1664525u + 1013904223u;
+                float x = (r >> 8) % 1000 / 1000.0f * viewport_.w;
+                r = r * 1664525u + 1013904223u;
+                float y = (r >> 8) % 1000 / 1000.0f * viewport_.h;
+                clickSelect({x, y}, false);
+            }
+            break;
+        }
+        case 14:  // what dragging the Width field of the last-operation panel does
+            if (lastOpAdjustable() || lastOp_.type == OpType::Bevel) {
+                lastOp_.bevel.width = 0.005f + 0.004f * (1.0f + std::sin(frame * 0.3f));
+                applyLastOp();
+            }
+            break;
+        case 15: {  // move one object a little and record an undo step, every frame
+            Object& o = scene_.objects[frame % scene_.objects.size()];
+            pushUndo();
+            o.position.y += 0.001f;
+            break;
+        }
+        case 16: {  // open the search, type, close; switch the workspace
+            if (frame % 2 == 0) {
+                openPalette();
+                paletteQuery_ = (frame % 4 == 0) ? "bev" : "add s";
+                (void)paletteMatches();
+            } else {
+                paletteOpen_ = false;
+            }
+            setWorkspace(frame % WS_COUNT);
+            break;
+        }
         case 10: {  // a rotate-handle drag: one transform, updated every frame
             if (frame == 0) {
                 tool_ = Tool::Rotate;
@@ -198,12 +302,24 @@ void Editor::benchmarkFrame(int s, int frame) {
 
 void Editor::benchmarkTick() {
     if (benchScenario_ < 0 || benchScenario_ >= kScenarioCount) return;
+    if (benchFrame_ == 0 && !benchOnly_.empty() &&
+        std::find(benchOnly_.begin(), benchOnly_.end(), benchScenario_ + 1) == benchOnly_.end()) {
+        // Not selected: skip straight to the next one (or finish).
+        ++benchScenario_;
+        if (benchScenario_ < kScenarioCount) return benchmarkTick();
+        benchScenario_ = kScenarioCount - 1;
+        benchFrame_ = kWarmupFrames + kMeasureFrames;
+        skipScenarioStats_ = true;
+    }
     if (benchFrame_ == 0) {
         clearForBenchmark();
         benchmarkSetup(benchScenario_);
     }
     if (benchFrame_ == kWarmupFrames) prof::resetTotals();
     if (benchFrame_ == kWarmupFrames + kMeasureFrames) {
+        if (skipScenarioStats_) {
+            benchText_ += "";
+        } else {
         // Collect this scenario.
         const int frames = std::max(1, prof::framesSinceReset());
         std::vector<prof::Stat> st = prof::stats();
@@ -229,11 +345,12 @@ void Editor::benchmarkTick() {
         if (viewportTimer_.supported())
             benchText_ += strf("\nGPU time for the viewport (GL timer queries): %.3f ms/frame\n", viewportTimer_.avgMs());
         if (xf_ != Xform::None) endTransform(true);
+        }
 
         ++benchScenario_;
         benchFrame_ = 0;
         if (benchScenario_ >= kScenarioCount) {
-            benchmarkOperations();
+            if (benchOnly_.empty()) benchmarkOperations();
             std::string header = "# Modeler3D performance report\n\n";
             const GLubyte* renderer = gl::GetString(GL_RENDERER);
             header += strf("GPU: %s, window %dx%d, UI scale %d, vsync off, glFinish every frame.\n",
@@ -284,6 +401,61 @@ void Editor::benchmarkOperations() {
         for (int k = 0; k < 100; ++k) accel.raycast({0.01f * k, 0.3f, 5}, {0, 0, -1}, t);
     });
 
+    {
+        auto edges = uniqueEdges(dense);
+        std::vector<meshedit::Edge> some;
+        for (size_t i = 0; i < edges.size(); i += 13) some.push_back(edges[i]);
+        std::vector<int> faces, cap;
+        for (int f = 0; f < (int)dense.faces.size(); f += 13) faces.push_back(f);
+        for (int f = 0; f < (int)dense.faces.size(); ++f)
+            if (faceCenter(dense, dense.faces[f]).y > 1.3f) cap.push_back(f);
+        std::vector<char> vs;
+        std::vector<meshedit::Edge> ne;
+        std::vector<int> nf;
+        std::string err;
+        Mesh m;
+        auto fresh = [&] { m = dense; };
+        fresh();
+        timeIt("Edge loop select (131k quads)", [&] { (void)meshedit::edgeLoop(m, edges[5000]); });
+        timeIt("Split 10k edges", [&] { meshedit::subdivideEdges(m, some, 1, ne, vs); });
+        fresh();
+        timeIt("Loop cut, one ring (131k quads)", [&] { meshedit::loopCut(m, {edges[5000]}, meshedit::LoopCutParams(), ne, vs); });
+        fresh();
+        meshedit::BevelParams bp;
+        bp.width = 0.002f;
+        timeIt("Bevel 10k edges", [&] { meshedit::bevel(m, some, {}, bp, nf, vs); });
+        fresh();
+        meshedit::InsetParams ip;
+        ip.thickness = 0.001f;
+        ip.individual = true;
+        timeIt("Inset 10k faces (individual)", [&] { meshedit::insetFaces(m, faces, ip, nf, vs); });
+        fresh();
+        meshedit::PushParams pp;
+        pp.width = 0.01f;
+        timeIt("Push in the top cap (8.7k faces)", [&] { meshedit::pushIn(m, cap, pp, nf, vs, err); });
+        fresh();
+        pp.through = true;
+        timeIt("Punch a hole through the sphere (131k quads)", [&] { meshedit::pushIn(m, cap, pp, nf, vs, err); });
+        Mesh two = dense;
+        meshedit::appendMesh(two, dense, translation({4, 0, 0}));
+        std::vector<int> facing;
+        for (int f = 0; f < (int)two.faces.size(); ++f) {
+            Vec3 c = faceCenter(two, two.faces[f]);
+            if ((c.x > 1.45f && c.x < 2) || (c.x > 2 && c.x < 2.55f)) facing.push_back(f);
+        }
+        timeIt("Bridge two 131k-quad spheres (facing caps)", [&] {
+            meshedit::bridgeFaces(two, facing, meshedit::BridgeParams(), nf, vs, err);
+        });
+        fresh();
+        timeIt("Clean up (weld + T-junctions), 131k quads", [&] { poly::cleanup(m); });
+    }
+
+    clearForBenchmark();
+    for (int k = 0; k < 10; ++k) scene_.add(dense, "Dense", kPalette[1]);
+    pushUndo();
+    scene_.objects[3].mesh.verts[0].y += 0.01f;
+    scene_.objects[3].mesh.touchPositions();
+    timeIt("Undo snapshot after editing 1 of 10 dense meshes (1.3M quads total)", [&] { pushUndo(); });
     clearForBenchmark();
     scene_.add(dense, "Dense", kPalette[1]);
     timeIt("Undo snapshot (scene with 131k-quad mesh)", [&] { pushUndo(); });

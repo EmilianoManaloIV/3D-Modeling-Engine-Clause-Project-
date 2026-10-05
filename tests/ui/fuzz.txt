@@ -1,0 +1,44 @@
+# Random input in every workspace and both modes; the scene is checked
+# after every frame.
+wait 3
+fuzz 1500 1
+check
+key Esc
+key A-1
+cmd Add Torus
+key Tab
+fuzz 1500 2
+check
+key Esc
+key A-2
+fuzz 800 3
+key Esc
+key A-3
+fuzz 800 4
+key Esc
+key A-4
+fuzz 800 5
+key Esc
+key A-5
+fuzz 400 6
+key Esc
+cmd Preferences: keys
+fuzz 400 7
+check
+print
+# Tool fuzzing: random selections and random commands, in edit mode on a
+# few different meshes, with last-operation settings changed at random.
+key Esc
+cmd Workspace: Model
+cmd Add Sphere
+key Tab
+fuzzcmd 400 11
+check
+cmd Add Gear
+fuzzcmd 400 12
+check
+cmd Add Torus
+key Tab
+fuzzcmd 400 13
+check
+print

@@ -1,0 +1,68 @@
+# Whole pipeline, keyboard + search only (no precise mouse work needed):
+# model -> texture -> rig -> light -> render, then save and reload.
+wait 3
+check
+# --- 1 Model: a cube, edit mode, add geometry with the new tools ---
+cmd Add Cube
+expect Cube
+key Tab
+expect Edit mode
+key 3
+cmd Select all / none
+cmd Inset faces
+type 0.2
+key Enter
+expect Inset
+cmd Push in (inverse extrude)
+type 0.3
+key Enter
+expect Push in
+check
+key 2
+cmd Select all / none
+cmd Select all / none
+key 1
+cmd Select all / none
+cmd Select all / none
+key Tab
+expect Object mode
+cmd Add Cylinder
+key Tab
+key 3
+cmd Select all / none
+cmd Poke faces
+check
+key Tab
+print
+# --- 2 Texture ---
+key A-2
+expect Texture
+cmd Smart UV unwrap
+cmd Pack UV islands
+check
+# --- 3 Rig ---
+key A-3
+cmd Add bone
+cmd Extrude bone (child)
+check
+# --- 4 Light ---
+key A-4
+cmd Add area light
+cmd Add camera
+check
+# --- 5 Render (CPU, a few samples) ---
+key A-5
+cmd Render (path tracer)
+wait 30
+cmd Render (path tracer)
+check
+print
+# --- File round trip ---
+key A-1
+cmd File: save
+wait 2
+cmd Add Torus
+cmd File: open
+wait 3
+check
+print

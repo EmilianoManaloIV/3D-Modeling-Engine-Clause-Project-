@@ -1,4 +1,4 @@
-// Path-traced rendering in the viewport (Render tab) on one of three
+// Path-traced rendering in the viewport (Render workspace) on one of three
 // devices - the OpenGL fragment-shader tracer, the multithreaded CPU tracer,
 // or DirectX ray tracing on RTX-class hardware - and GPU utilisation
 // reporting for both the raster preview and the path tracers.
@@ -219,7 +219,7 @@ void Editor::toggleRenderView() {
     if (renderView_) {
         if (xf_ != Xform::None) endTransform(true);
         startRender();
-        setStatus(strf("Rendering on the %s - %d samples (Render tab). Press again to return to the editor view.",
+        setStatus(strf("Rendering on the %s - %d samples (Render workspace). Press again to return to the editor view.",
                        renderDeviceName(renderDevice_), (int)renderSet_.samples));
     } else {
         stopRender();

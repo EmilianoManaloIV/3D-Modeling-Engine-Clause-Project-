@@ -28,10 +28,29 @@ const char* const kShadingNames[SHADE_COUNT] = {"Studio", "Lit", "Checker", "Wei
 // ============================================================================
 // Widgets helpers
 // ============================================================================
+// A line of text that wraps at word boundaries instead of being cut off.
 void Editor::label(PanelLayout& L, const std::string& text, Color c) {
     const float fs = (float)fontScale_;
-    Rect r = L.row(9 * fs);
-    ui_.text(r.x, r.y + fs, ui_.fitText(text, r.w), c);
+    const float width = L.w;
+    std::string rest = text;
+    while (true) {
+        std::string line = rest;
+        if (ui_.textWidth(line) > width) {
+            // Longest prefix that fits, broken at a space when there is one.
+            size_t fit = 0;
+            while (fit < rest.size() && ui_.textWidth(rest.substr(0, fit + 1)) <= width) ++fit;
+            size_t brk = rest.rfind(' ', fit);
+            if (brk == std::string::npos || brk == 0) brk = std::max<size_t>(1, fit);
+            line = rest.substr(0, brk);
+            rest = rest.substr(brk);
+            while (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+        } else {
+            rest.clear();
+        }
+        Rect r = L.row(9 * fs);
+        ui_.text(r.x, r.y + fs, line, c);
+        if (rest.empty()) break;
+    }
 }
 
 bool Editor::vec3Fields(PanelLayout& L, const char* key, uint32_t salt, Vec3& v, float speed, float lo, float hi,
@@ -773,24 +792,29 @@ void Editor::buildViewportHeader() {
     const float gap = 3 * fs, pad = 3 * fs;
     ui_.rect(headerRect_, withAlpha(theme::panelDark, 0.85f));
     ui_.pushClip(headerRect_);
+    // Short labels when the viewport is narrow, so every button stays visible.
+    static const char* const kShort[SHADE_COUNT] = {"Std", "Lit", "Chk", "Wgt"};
+    const char* const* shadeNames = kShadingNames;
+    float full = 0;
+    for (int s = 0; s < SHADE_COUNT; ++s) full += ui_.textWidth(kShadingNames[s]) + 8 * fs + gap;
+    full += 3 * gap + ui_.textWidth("WireGridUV MapPause") + 4 * (8 * fs + gap);
+    const bool compact = full > headerRect_.w - 2 * pad;
+    if (compact) shadeNames = kShort;
     float x = headerRect_.x + pad;
     const float y = headerRect_.y + pad, h = ui_.rowHeight();
-    auto button = [&](const char* id, const char* text, bool toggled) {
+    auto button = [&](uint32_t id, const char* text, bool toggled) {
         float w = ui_.textWidth(text) + 8 * fs;
-        bool clicked = ui_.button(uiHash(id), {x, y, w, h}, text, toggled);
+        bool clicked = ui_.button(id, {x, y, w, h}, text, toggled);
         x += w + gap;
         return clicked;
     };
-    for (int s = 0; s < SHADE_COUNT; ++s) {
-        float w = ui_.textWidth(kShadingNames[s]) + 8 * fs;
-        if (ui_.button(uiHash("hdr.shade", (uint32_t)s), {x, y, w, h}, kShadingNames[s], shading_ == s)) shading_ = s;
-        x += w + gap;
-    }
-    x += 3 * gap;
-    if (button("hdr.wire", "Wire", wireframe_)) wireframe_ = !wireframe_;
-    if (button("hdr.grid", "Grid", showGrid_)) showGrid_ = !showGrid_;
-    if (button("hdr.uv", "UV Map", uvEditor_)) uvEditor_ = !uvEditor_;
-    if (button("hdr.play", playing_ ? "Pause" : "Play", playing_)) togglePlay();
+    for (int s = 0; s < SHADE_COUNT; ++s)
+        if (button(uiHash("hdr.shade", (uint32_t)s), shadeNames[s], shading_ == s)) shading_ = s;
+    x += (compact ? 1 : 3) * gap;
+    if (button(uiHash("hdr.wire"), "Wire", wireframe_)) wireframe_ = !wireframe_;
+    if (button(uiHash("hdr.grid"), "Grid", showGrid_)) showGrid_ = !showGrid_;
+    if (button(uiHash("hdr.uv"), compact ? "UV" : "UV Map", uvEditor_)) uvEditor_ = !uvEditor_;
+    if (button(uiHash("hdr.play"), playing_ ? (compact ? "||" : "Pause") : (compact ? ">" : "Play"), playing_)) togglePlay();
     ui_.popClip();
 }
 
@@ -813,7 +837,7 @@ void Editor::buildViewportOverlay() {
         for (const Object& o : scene_.objects) lights += o.kind == ObjectKind::Light;
         ui_.text(x, y,
                  lights ? strf("Lit: %d light%s%s", lights, lights == 1 ? "" : "s", lights > kMaxLights ? " (8 used)" : "")
-                        : std::string("Lit: no lights - add one (Create tab)"),
+                        : std::string("Lit: no lights - add one (4 Light)"),
                  lights ? withAlpha(theme::textDim, 0.9f) : theme::selection);
         y += 10 * fs;
     } else if (shading_ == SHADE_WEIGHTS) {
@@ -837,7 +861,7 @@ void Editor::buildViewportOverlay() {
     if (xf_ != Xform::None) ui_.text(x, y, xfInfo_, theme::selection);
 
     if (scene_.objects.empty()) {
-        const std::string msg = "Empty scene - add something from the Create tab";
+        const std::string msg = "Empty scene - add something from 1 Model > Create";
         ui_.text(viewport_.x + (viewport_.w - ui_.textWidth(msg)) * 0.5f, viewport_.y + viewport_.h * 0.5f, msg,
                  theme::textDim);
     }
@@ -913,7 +937,7 @@ void Editor::buildUvEditor() {
         }
     Object* o = activeMesh();
     if (!o || !o->mesh.hasUVs()) {
-        ui_.textIn({r.x, r.y + r.h * 0.45f, r.w, 10 * fs}, o ? "No UVs - unwrap (UV tab)" : "Select a mesh",
+        ui_.textIn({r.x, r.y + r.h * 0.45f, r.w, 10 * fs}, o ? "No UVs - unwrap (2 Texture)" : "Select a mesh",
                    theme::text, true);
         ui_.border(r, theme::border, fs);
         return;
@@ -943,44 +967,41 @@ void Editor::buildHelp() {
     static const char* const kUnity[][2] = {
         {"UNITY KEYMAP", ""},
         {"Q W E R Y", "Hand / Move / Rotate / Scale / All tools"},
-        {"Drag a handle", "Arrow: axis, square: plane, ring: rotate"},
-        {"  Ctrl while dragging", "Snap (0.25 / 15 deg / 0.1)"},
+        {"Drag a handle", "Arrow: axis, square: plane, ring: rotate (Ctrl snaps)"},
         {"  Shift + drag (Edit)", "Extrude the selected faces, then move"},
         {"X / Z", "Global-local axes / pivot-center"},
-        {"Alt+LMB  MMB  Alt+RMB", "Orbit / pan / zoom"},
-        {"RMB + W A S D Q E", "Fly (accelerates; Shift faster)"},
-        {"  wheel while flying", "Change fly speed"},
-        {"Arrow keys", "Move the camera; wheel zooms"},
-        {"Scene gizmo (corner)", "Click an axis: view along it; label: Persp/Iso"},
-        {"F / double-click list", "Frame selection (animated)"},
-        {"Click / drag", "Select / box (Shift or Ctrl adds)"},
-        {"Ctrl+D / Delete", "Duplicate / delete"},
-        {"Ctrl+A / Ctrl+E", "Select all / extrude faces"},
-        {"Shift+Z", "Cycle shading modes"},
+        {"Alt+LMB  MMB  Alt+RMB", "Orbit / pan / zoom;  RMB + W A S D Q E: fly"},
+        {"Ctrl+D / Del, Bksp", "Duplicate / delete"},
+        {"Ctrl+A / Ctrl+E", "Select all / extrude"},
     };
     static const char* const kBlender[][2] = {
         {"BLENDER KEYMAP", ""},
-        {"G / R / S", "Move / rotate / scale (X Y Z lock, Ctrl snap)"},
-        {"  Left click / Enter", "Confirm     Right click / Esc: cancel"},
-        {"Handles", "Toolbar tools work too (drag the gizmo)"},
+        {"G / R / S", "Move / rotate / scale: X Y Z lock, type a value, Enter"},
         {"RMB / MMB drag", "Orbit; Shift: pan; wheel: zoom"},
-        {"Click / drag", "Select / box (Shift add, Ctrl remove)"},
-        {"A / E / X", "Select all / extrude faces / delete"},
-        {"Shift + D", "Duplicate (keeps hierarchy and rigs)"},
+        {"A / E / X / Shift+D", "Select all / extrude / delete / duplicate"},
         {"Z / W", "Cycle shading / wireframe"},
     };
     static const char* const kCommon[][2] = {
         {"", ""},
-        {"BOTH KEYMAPS", ""},
-        {"Tab (Edit: 1 2 3 I)", "Edit mode (vertex/edge/face, inset)"},
-        {"Ctrl+P / Alt+P", "Parent to active / clear parent"},
-        {"U / Space / F", "Smart unwrap / particles / frame"},
-        {"1 / 3 / 7  (Ctrl)  5", "Front / right / top (opposite); ortho"},
-        {"Ctrl+Z Y / Ctrl+S O", "Undo, redo / save, load (File tab)"},
-        {"F3 / F12 / F1 / F5", "Stats / screenshot / help / render"},
-        {"0 / Ctrl+Alt+0", "Camera view / camera to this view"},
-        {"Drag in the list", "Parent / reorder; Ctrl/Shift multi"},
-        {"Keys / Camera tabs", "Rebind keys (defaults shown) / look"},
+        {"PIPELINE  (top bar)", "1 Model > 2 Texture > 3 Rig > 4 Light > 5 Render (Alt+1..5)"},
+        {"Ctrl+K  or  Search", "Find and run any command by name"},
+        {"Tab, then 1 2 3", "Edit mode: vertex / edge / face select"},
+        {"I / Shift+I", "Inset / push in (inverse extrude); Punch: a hole through"},
+        {"Ctrl+B / Ctrl+R", "Bevel (wheel: segments) / loop cut"},
+        {"J / Ctrl+F / M", "Connect vertices / fill / merge"},
+        {"Bridge, Poke, Split", "Model panel or search; two face groups bridge"},
+        {"L / Alt+L / Ctrl+L", "Select edge loop / ring / linked (dbl-click edge)"},
+        {"Typed values", "While insetting, beveling, moving: type 0.25, Enter"},
+        {"Ctrl+J / Ctrl+P", "Join meshes / parent to active"},
+        {"", ""},
+        {"NO MOUSE / TRACKPAD", ""},
+        {"Alt+drag", "Orbit;  +Shift: pan;  +Ctrl: zoom (any keymap)"},
+        {"Orbit Pan Zoom Fit", "On-screen buttons under the axis gizmo: drag them"},
+        {"Trackpad mode", "Prefs > Navigate: 2-finger scroll orbits, pinch zooms"},
+        {"Arrows / Alt+arrows", "Move / orbit the view;  = and - zoom"},
+        {"No F-keys / numpad", "Help Shift+/  Stats Ctrl+Shift+I  Render Ctrl+Shift+R"},
+        {"", "Screenshot Ctrl+Shift+P;  views: top-row 1 3 7 5 or the gizmo"},
+        {"Ctrl+Z / Ctrl+Y", "Undo / redo;  Ctrl+S / Ctrl+O save / open"},
     };
     std::vector<std::pair<const char*, const char*>> rows;
     if (keymap_ == Keymap::Unity)
@@ -991,7 +1012,7 @@ void Editor::buildHelp() {
     const int n = (int)rows.size();
     const float fs = (float)fontScale_;
     const float pad = 10 * fs, lineH = 10 * fs;
-    const float keyW = 22 * 6 * fs, descW = 46 * 6 * fs;
+    const float keyW = 22 * 6 * fs, descW = 62 * 6 * fs;
     const float w = keyW + descW + 2 * pad, h = (n + 3) * lineH + 2 * pad;
     ui_.rect({0, 0, (float)screenW_, (float)screenH_}, {0, 0, 0, 0.55f});
     Rect box{std::floor((screenW_ - w) * 0.5f), std::floor(std::max(0.0f, (screenH_ - h) * 0.5f)), w, h};
@@ -1056,7 +1077,7 @@ void Editor::buildViewportToolbar() {
         setStatus(pivotCenter_ ? "Handle position: Center" : "Handle position: Pivot");
     }
     y += h + gap + 3 * fs;
-    // Path-traced view toggle (F5 by default; settings in the Render tab).
+    // Path-traced view toggle (F5 by default; settings in the Render workspace).
     if (ui_.button(uiHash("tool.render"), {x, y, w, h}, "Render", renderView_)) toggleRenderView();
     y += h;
     toolbarRect_ = {x, top, w, y - top};

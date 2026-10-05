@@ -20,6 +20,8 @@
 //   shot out.png               save a screenshot of the next frame
 //   fuzz 2000 7                random clicks / drags / keys / scrolls for 2000 frames, seed 7;
 //                              the scene is checked for corruption after every frame
+//   fuzzcmd 500 3              500 random edit-mode selections + random commands (tools,
+//                              last-operation tweaks, undo / redo ...), checked every step
 //   check                      verify scene invariants now (fails the script if broken)
 //   expect <text>              fail unless the status line contains <text>
 //   print                      write a one-line scene summary to stdout
@@ -62,9 +64,10 @@ private:
     std::string pendingShot_;
     // fuzzing
     int fuzzLeft_ = 0;
+    int fuzzCmdLeft_ = 0;
+    int fuzzCmdCount_ = 0;
     uint32_t rng_ = 1;
     bool fuzzHeld_[3] = {};
-    int fuzzKeyHeld_ = 0;
     uint64_t fuzzEvents_ = 0;
     uint32_t next();
 };
