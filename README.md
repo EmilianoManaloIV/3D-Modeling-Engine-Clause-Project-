@@ -3,11 +3,9 @@
 A small 3D modeling program written in C++17 and OpenGL 3.3. It runs on Windows and Linux,
 has **no third-party dependencies**, and builds into a single executable you can just run.
 
-![Modeler3D: lights, emission, particles, hierarchy and parametric shapes](docs/screenshot.png)
+![Showcase scene: lights, emission, fire particles, hierarchy and parametric shapes](docs/showcase.png)
 
-| UV unwrapping + UV editor | Bones, skinning and weights |
-|---|---|
-| ![UV](docs/uv.png) | ![Rig](docs/rig.png) |
+*Showcase scene, `Modeler3D --demo 1`. More screenshots are in [Screenshots](#screenshots) below.*
 
 ## Run it
 
@@ -71,40 +69,122 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
 - They simulate live (Space plays / pauses) and are hierarchy objects, so you can parent fire to a
   torch or sparks to a bone.
 
+**Unity-style transform tools**
+- **Tools:** Hand / Move / Rotate / Scale / All (combined), on the palette at the left of the
+  viewport or with `Q W E R Y`.
+- **Handles you drag:**
+  - Move: arrows (one axis), squares (two axes, on the camera-facing side), centre box (view plane).
+  - Rotate: rings around each axis (only the front halves are drawn bright), an outer ring for the
+    view axis, and trackball rotation from the inside.
+  - Scale: cubes per axis and a centre box for uniform scale.
+  - Hold `Ctrl` while dragging to snap.
+- **Global / Local** orientation (`X`) and **Pivot / Center** handle position (`Z`), as in Unity. In
+  Pivot mode, multiple objects rotate and scale around their own origins. The Scale handle always uses
+  local axes.
+- **Edit mode:** the same handles move vertices. Shift + drag on a Move handle **extrudes** the selected
+  faces first (ProBuilder style).
+- **Unity scene camera:**
+  - Alt + left drag orbits, middle drag pans, Alt + right drag zooms, and the wheel zooms.
+  - Hold the right button and use `W A S D Q E` to **fly**. It accelerates while held, Shift makes it
+    faster, and scrolling while flying sets the fly speed.
+  - Arrow keys move the camera.
+  - The **scene gizmo** in the top-right corner works like Unity's: click an axis to look along it
+    (switches to Iso), and click the centre or the Persp/Iso label to toggle projection.
+  - `F`, the view buttons and **double-clicking an object in the hierarchy** frame it with an eased
+    camera transition.
+  - Field of view and fly speed are under *Mesh > Scene camera*.
+- **Inspector:** shows Position / Rotation / Scale, with **Reset / Copy / Paste** (Paste goes to every
+  selected object).
+- **Scripting-style Transform API** in [src/transform.h](src/transform.h): `position / setPosition`,
+  `rotation / setRotation`, `translate` and `rotate` in `Space::Self` or `Space::World`,
+  `rotateAround`, `lookAt`, `forward / right / up`, `transformPoint / inverseTransformPoint`,
+  `transformDirection`, `transformVector`, `lossyScale`, `reset`. The handles use it, and it is
+  unit-tested.
+- **Keymaps:** Unity (default) or Blender (G/R/S modal transforms). Choose in *File > Keymap*; the
+  choice is saved in `Modeler3D.cfg` next to the executable.
+
 **Everything else**
 - **Undo / redo** (64 steps) covers every edit.
 - **Save / load** `.m3d` scenes, and **export / import Wavefront OBJ** (+ `.mtl` with colors,
   emission and gloss). Exports bake transforms and the current pose.
 - Shading modes **Studio / Lit / Checker / Weights** (`Z` cycles them).
 - Also: perspective / ortho, front / right / top views, wireframe, grid, orientation gizmo,
-  F12 PNG screenshots, and a warning before quitting with unsaved changes.
+  F12 PNG screenshots (compressed), an **F3 performance overlay**, and a warning before quitting with
+  unsaved changes.
 
 ## Controls
 
-| Input                          | Action                                               |
-|--------------------------------|------------------------------------------------------|
-| Left click / drag              | Select / box select (Shift adds, Ctrl removes)       |
-| Right or middle drag           | Orbit camera (also Alt + left drag)                  |
-| Shift + right drag             | Pan camera                                           |
-| Wheel                          | Zoom                                                 |
-| `G` / `R` / `S`                | Move / rotate / scale. Then `X` `Y` `Z` locks an axis and holding `Ctrl` snaps. Click or Enter confirms; right click or Esc cancels |
-| `Tab`                          | Toggle Object / Edit mode                            |
-| `A` / `E` / `X`                | Select all / extrude faces / delete                  |
-| `Shift+D`                      | Duplicate                                            |
-| `Ctrl+P` / `Alt+P`             | Parent to the active object / clear parent           |
-| `U`                            | Smart UV unwrap                                      |
-| `Z`                            | Cycle shading: Studio, Lit, Checker, Weights         |
-| `Space`                        | Play / pause particles                               |
-| `F`                            | Frame selection                                      |
-| `1` `3` `7` (Ctrl = opposite)  | Front / right / top view                             |
-| `5` / `W`                      | Perspective-orthographic / wireframe + x-ray picking |
-| `Ctrl+Z` / `Ctrl+Y`            | Undo / redo                                          |
-| `Ctrl+S` / `Ctrl+O`            | Save / load the file named in the File tab           |
-| `F12`                          | Save a PNG screenshot                                |
-| `F1` / `H`                     | Help overlay                                         |
+**Unity keymap (default)**
+
+| Input | Action |
+|---|---|
+| `Q` `W` `E` `R` `Y` | Hand / Move / Rotate / Scale / All tools |
+| Drag a handle | Arrow = one axis, square = plane, ring = rotate, cube = scale. `Ctrl` snaps |
+| Shift + drag a Move handle (Edit mode) | Extrude the selected faces, then move them |
+| `X` / `Z` | Global-local axes / pivot-center |
+| Alt + left drag, middle drag, Alt + right drag | Orbit, pan, zoom |
+| Right drag + `W A S D Q E` | Fly the camera (accelerates; Shift = faster; scroll = fly speed) |
+| Arrow keys | Move the camera |
+| Scene gizmo (top right) | Click an axis: view along it (Iso); click the centre or label: Persp/Iso |
+| Double-click in the hierarchy | Frame that object |
+| Click / drag | Select / box select (Shift or Ctrl adds) |
+| `Ctrl+D` / `Delete` | Duplicate / delete |
+| `Ctrl+A` / `Ctrl+E` | Select all / extrude faces |
+| `Shift+Z` | Cycle shading modes |
+
+**Blender keymap**
+
+| Input | Action |
+|---|---|
+| `G` / `R` / `S` | Move / rotate / scale. Then `X` `Y` `Z` locks an axis; click or Enter confirms, right click or Esc cancels |
+| Right or middle drag | Orbit (Shift = pan); wheel zooms |
+| `A` / `E` / `X` | Select all / extrude faces / delete |
+| `Shift+D` | Duplicate |
+| `Z` / `W` | Cycle shading / wireframe |
+
+**Both keymaps**
+
+| Input | Action |
+|---|---|
+| `Tab` | Object / Edit mode |
+| `Ctrl+P` / `Alt+P` | Parent to the active object / clear parent |
+| `U` / `Space` / `F` | Smart unwrap / play-pause particles / frame selection |
+| `1` `3` `7` (Ctrl = opposite), `5` | Front / right / top view, perspective-orthographic |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
+| `Ctrl+S` / `Ctrl+O` | Save / load the file named in the File tab |
+| `F3` / `F12` / `F1` | Performance overlay / PNG screenshot / help |
 
 The left panel has tabs: **Create, Mesh, UV, Rig, FX, File**. To change a number in the right
 panel, drag it sideways (hold Shift for fine steps) or click it and type a value.
+
+## Screenshots
+
+### Unity-style transform handles
+
+![Move handle on the selected cube, the tool palette, and the Reset / Copy / Paste inspector](docs/transform-tools.png)
+
+*Default scene: the Move handle (arrows, plane squares, centre box), the orange selection outline,
+and the tool palette.*
+
+### UV editor
+
+![UV editor overlay showing the Smart-unwrapped layout of a gear, with the checker texture on the model](docs/uv-editor.png)
+
+*`Modeler3D --demo 3`: Smart unwrap of a gear. The checker view on the model and the packed layout
+in the UV editor (selected faces in orange).*
+
+### Skinned mesh
+
+![A column bent by a two-bone chain, coloured by the weights of the tip bone](docs/skinned-mesh.png)
+
+*`Modeler3D --demo 4`: a column skinned to two bones and bent by posing the tip bone. The Weights
+view shows that bone's influence (blue 0 to red 1).*
+
+## Performance
+
+See [docs/performance.md](docs/performance.md) for the benchmark method, before/after numbers and the
+bottlenecks that were fixed. For example, 1000 objects went from 187 ms to 12 ms per frame, and
+loading a 131k-quad scene from 4.5 s to 0.13 s. Run it yourself with `Modeler3D --benchmark report.md`.
 
 ## Building from source
 
@@ -117,7 +197,7 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 (`sudo apt install build-essential cmake libx11-dev libgl-dev` on Debian/Ubuntu), then run
 `./build_linux.sh`. The result is `dist/linux/Modeler3D`.
 
-**Tests:** configure with `-DMODELER_BUILD_TESTS=ON` and run `modeler_tests`. Its 948 checks cover:
+**Tests:** configure with `-DMODELER_BUILD_TESTS=ON` and run `modeler_tests`. Its 983 checks cover:
 - math and TRS decomposition
 - primitives and all 10 parametric shapes (closed, consistently oriented, outward-facing)
 - Catmull-Clark (including UVs and weights), extrude / delete
@@ -125,6 +205,7 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 - hierarchy (world matrices, keep-world parenting, cycle refusal)
 - skinning (rest pose is exact, bending moves the right vertices)
 - particles, ray picking, and `.m3d` / OBJ round trips
+- the Unity-style Transform API, the id cache, ray/box rejection and indexed render data
 
 ## How the code maps to the Engine Books
 
@@ -142,6 +223,8 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 | Particle systems | `particles.cpp` | FoCG sec. 16.7; GEA Vol. II sec. 11.6, 14.4 (integration) |
 | Parametric / procedural shapes, data-driven recipes | `parametric.cpp` | FoCG sec. 16.6; GEA Vol. II sec. 16.3 |
 | Scene / object model, world editor | `scene.cpp`, `editor*.cpp` | GEA Vol. II ch. 16 (game world editor) |
+| Unity-style Transform API, handles (ray-plane dragging) | `transform.cpp`, `editor_gizmo.cpp` | FoCG ch. 4, 7; GEA Vol. I sec. 5.3 |
+| Profiler, benchmark, F3 overlay | `profiler.cpp`, `editor_bench.cpp` | GEA Vol. I sec. 2.3, ch. 10 |
 | Platform layer (Win32/WGL, X11/GLX) | `platform_*.cpp` | GEA Vol. I sec. 1.5 |
 | Input: per-frame pressed / held / released state | `platform.h` | GEA Vol. I ch. 9 (Human Interface Devices) |
 | Main loop, startup / shutdown order, frame timing | `main.cpp` | GEA Vol. I sec. 6.1, ch. 8 |
@@ -170,8 +253,13 @@ src/
   editor.*            the application: frame loop, input, transform tool, undo
   editor_actions.cpp  commands (create, mesh/UV/rig tools, hierarchy, files, sample scenes)
   editor_ui.cpp       panels, outliner, properties, UV editor, dialogs
-  editor_render.cpp   viewport drawing, gizmos, particles
-  image_io.*          PNG writer for screenshots
+  editor_render.cpp   viewport drawing, selection outline, icons, particles
+  editor_gizmo.cpp    Unity-style Move / Rotate / Scale handles, keymap settings
+  editor_bench.cpp    --benchmark scenarios and report
+  transform.*         Unity-style Transform API (world get/set, Translate, Rotate, LookAt...)
+  profiler.*          scoped CPU profiler (F3 overlay, benchmark)
+  image_io.*          PNG writer with its own DEFLATE compressor
+docs/                 screenshots, performance.md, benchmark-report.md
 tests/tests.cpp       unit tests
 ```
 

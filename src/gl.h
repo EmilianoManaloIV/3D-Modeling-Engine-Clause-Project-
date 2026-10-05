@@ -65,8 +65,14 @@ typedef std::ptrdiff_t GLsizeiptr;
 #define GL_TEXTURE0 0x84C0
 #define GL_PROGRAM_POINT_SIZE 0x8642
 #define GL_ARRAY_BUFFER 0x8892
+#define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#define GL_UNSIGNED_INT 0x1405
 #define GL_STREAM_DRAW 0x88E0
 #define GL_STATIC_DRAW 0x88E4
+#define GL_DYNAMIC_DRAW 0x88E8
+#define GL_FRAMEBUFFER 0x8D40
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 #define GL_FRAGMENT_SHADER 0x8B30
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_COMPILE_STATUS 0x8B81
@@ -98,6 +104,13 @@ typedef std::ptrdiff_t GLsizeiptr;
                          GLenum format, GLenum type, const void* pixels))                                    \
     X(void, TexParameteri, (GLenum target, GLenum pname, GLint param))                                       \
     X(void, GenerateMipmap, (GLenum target))                                                                 \
+    X(void, GenFramebuffers, (GLsizei n, GLuint * framebuffers))                                             \
+    X(void, DeleteFramebuffers, (GLsizei n, const GLuint* framebuffers))                                     \
+    X(void, BindFramebuffer, (GLenum target, GLuint framebuffer))                                            \
+    X(void, FramebufferTexture2D, (GLenum target, GLenum attachment, GLenum textarget, GLuint texture,         \
+                                   GLint level))                                                             \
+    X(GLenum, CheckFramebufferStatus, (GLenum target))                                                       \
+    X(void, DrawElements, (GLenum mode, GLsizei count, GLenum type, const void* indices)) \
     X(void, DrawArrays, (GLenum mode, GLint first, GLsizei count))                                           \
     X(void, GenBuffers, (GLsizei n, GLuint * buffers))                                                       \
     X(void, DeleteBuffers, (GLsizei n, const GLuint* buffers))                                               \
@@ -126,6 +139,7 @@ typedef std::ptrdiff_t GLsizeiptr;
     X(void, Uniform1i, (GLint location, GLint v0))                                                           \
     X(void, Uniform1f, (GLint location, GLfloat v0))                                                         \
     X(void, Uniform2f, (GLint location, GLfloat v0, GLfloat v1))                                             \
+    X(void, Uniform2i, (GLint location, GLint v0, GLint v1))                                                 \
     X(void, Uniform3f, (GLint location, GLfloat v0, GLfloat v1, GLfloat v2))                                 \
     X(void, Uniform4f, (GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3))                     \
     X(void, UniformMatrix4fv, (GLint location, GLsizei count, GLboolean transpose, const GLfloat* value))

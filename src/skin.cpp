@@ -1,4 +1,5 @@
 #include "skin.h"
+#include "profiler.h"
 
 #include <cmath>
 #include <cstring>
@@ -21,6 +22,7 @@ const std::vector<Vec3>& evaluateMesh(const Scene& s, int i, bool restPose, std:
     model = s.world(i);
     if (restPose || !isSkinned(o)) return o.mesh.verts;
 
+    PROF_SCOPE("skinning (CPU)");
     std::vector<Mat4> palette;
     skinMatrices(s, o, palette);
     const Mat4 W = model;

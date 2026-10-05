@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 enum class ObjectKind { Mesh = 0, Light, Empty, Bone, Emitter };
@@ -88,6 +89,19 @@ struct Scene {
     uint32_t nextId = 1;
     Vec3 ambient{0.05f, 0.055f, 0.07f};
 
+private:
+    // `objects` is edited freely all over the editor, so the cache validates
+    // itself: every hit is checked, and a signature of the vector (size, buffer,
+    // first/last id) tells when a miss means "really absent" vs "stale map".
+    mutable std::unordered_map<uint32_t, int> idCache_;
+    mutable size_t cacheSize_ = ~size_t(0);
+    mutable const Object* cacheData_ = nullptr;
+    mutable uint32_t cacheFirst_ = 0, cacheLast_ = 0;
+    void rebuildIdCache() const;
+    bool idCacheCurrent() const;
+
+public:
+
     int add(Mesh mesh, const std::string& baseName, Vec3 color);
     int addObject(Object o);  // assigns id + unique name
     std::string uniqueName(const std::string& base, int ignoreIndex = -1) const;
@@ -96,9 +110,10 @@ struct Scene {
     size_t triangleCount() const;
 
     // Hierarchy
-    int indexOf(uint32_t id) const;
+    int indexOf(uint32_t id) const;  // O(1) amortized (cached id -> index map)
     int parentIndex(int i) const;
     Mat4 world(int i) const;
+    void computeWorlds(std::vector<Mat4>& out) const;  // every object's world matrix, O(n)
     Mat4 parentWorld(int i) const;
     bool isAncestor(int ancestor, int i) const;
     int depth(int i) const;

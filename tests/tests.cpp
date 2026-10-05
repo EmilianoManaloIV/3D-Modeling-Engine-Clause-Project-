@@ -5,6 +5,7 @@
 #include "particles.h"
 #include "scene.h"
 #include "skin.h"
+#include "transform.h"
 #include "uv.h"
 
 #include <cstdio>
@@ -542,6 +543,109 @@ static void testFilesV2() {
     std::remove("test_v2.mtl");
 }
 
+// --- Unity-style Transform API ------------------------------------------------
+static void testTransformApi() {
+    Scene s;
+    int parent = s.add(primitives::cube(), "Parent", {1, 1, 1});
+    int child = s.add(primitives::cube(), "Child", {1, 1, 1});
+    s.objects[parent].position = {10, 0, 0};
+    s.objects[parent].rotation = {0, 90, 0};
+    s.objects[parent].scale = {2, 2, 2};
+    s.objects[child].parent = s.objects[parent].id;
+    s.objects[child].position = {0, 0, 1};
+
+    // World position and axes through the hierarchy (+Z of a parent turned
+    // 90 degrees about Y points along world +X, scaled by 2).
+    CHECK(near(tf::position(s, child), {12, 0, 0}, 1e-4f));
+    CHECK(near(tf::forward(s, child), {1, 0, 0}, 1e-4f));
+    CHECK(near(tf::lossyScale(s, child), {2, 2, 2}, 1e-4f));
+
+    // setPosition / setRotation write world values back into parent space.
+    tf::setPosition(s, child, {10, 5, 0});
+    CHECK(near(tf::position(s, child), {10, 5, 0}, 1e-4f));
+    CHECK(near(s.objects[child].position, {0, 2.5f, 0}, 1e-4f));
+    tf::setRotation(s, child, Mat4());
+    CHECK(near(tf::forward(s, child), {0, 0, 1}, 1e-4f));
+    CHECK(near(s.objects[child].rotation, {0, -90, 0}, 1e-3f));
+
+    // Translate in Self vs World space.
+    int o = s.add(primitives::cube(), "Mover", {1, 1, 1});
+    s.objects[o].rotation = {0, 90, 0};
+    tf::translate(s, o, {0, 0, 1}, Space::Self);  // local forward = world +X
+    CHECK(near(tf::position(s, o), {1, 0, 0}, 1e-4f));
+    tf::translate(s, o, {0, 0, 1}, Space::World);
+    CHECK(near(tf::position(s, o), {1, 0, 1}, 1e-4f));
+
+    // Rotate: Self composes on the right, World on the left.
+    tf::rotate(s, o, Vec3(0, 0, 90), Space::Self);
+    CHECK(near(tf::up(s, o), {0, 0, -1}, 1e-3f) || near(tf::up(s, o), {0, 0, 1}, 1e-3f));
+    tf::rotate(s, o, Vec3(0, 1, 0), 90.0f, Space::World);
+    CHECK(near(tf::forward(s, o), {0, 0, -1}, 1e-3f));
+
+    // RotateAround moves the position around the pivot and turns the object.
+    int r = s.add(primitives::cube(), "Orbiter", {1, 1, 1});
+    s.objects[r].position = {2, 0, 0};
+    tf::rotateAround(s, r, {0, 0, 0}, {0, 1, 0}, 90.0f);
+    CHECK(near(tf::position(s, r), {0, 0, -2}, 1e-4f));
+    CHECK(near(tf::right(s, r), {0, 0, -1}, 1e-4f));
+
+    // LookAt points forward() at the target with up() kept upward.
+    int l = s.add(primitives::cube(), "Looker", {1, 1, 1});
+    s.objects[l].position = {0, 0, 0};
+    tf::lookAt(s, l, {3, 0, 0});
+    CHECK(near(tf::forward(s, l), {1, 0, 0}, 1e-4f));
+    CHECK(near(tf::up(s, l), {0, 1, 0}, 1e-4f));
+    tf::lookAt(s, l, {0, 5, 0});  // straight up: falls back to another up vector
+    CHECK(near(tf::forward(s, l), {0, 1, 0}, 1e-4f));
+
+    // Point / direction / vector conversions are inverses of each other.
+    Vec3 p(1.5f, -2, 0.25f);
+    CHECK(near(tf::inverseTransformPoint(s, child, tf::transformPoint(s, child, p)), p, 1e-4f));
+    CHECK(near(tf::inverseTransformDirection(s, child, tf::transformDirection(s, child, p)), p, 1e-4f));
+    CHECK(near(tf::inverseTransformVector(s, child, tf::transformVector(s, child, p)), p, 1e-4f));
+    CHECK(near(length(tf::transformDirection(s, child, {0, 0, 1})), 1.0f, 1e-4f));  // ignores scale
+    CHECK(near(length(tf::transformVector(s, child, {0, 0, 1})), 2.0f, 1e-4f));     // includes scale
+
+    tf::reset(s.objects[child]);
+    CHECK(near(s.objects[child].position, Vec3()) && near(s.objects[child].scale, {1, 1, 1}));
+    CHECK(near(tf::position(s, child), {10, 0, 0}, 1e-4f));  // now sits at the parent's origin
+
+    // Id cache stays correct while objects are added and removed.
+    uint32_t id = s.objects[r].id;
+    CHECK(s.indexOf(id) == r);
+    s.objects.erase(s.objects.begin());  // indices shift
+    CHECK(s.indexOf(id) == r - 1 && s.objects[r - 1].id == id);
+    CHECK(s.indexOf(999999) == -1);
+
+    // Bounds + ray/box rejection used by picking.
+    Mesh c = primitives::cube(2);
+    Vec3 lo, hi;
+    CHECK(c.bounds(lo, hi) && near(lo, {-1, -1, -1}) && near(hi, {1, 1, 1}));
+    CHECK(rayHitsBox({0, 0, 5}, {0, 0, -1}, lo, hi));
+    CHECK(!rayHitsBox({3, 0, 5}, {0, 0, -1}, lo, hi));
+    CHECK(!rayHitsBox({0, 0, 5}, {0, 0, -1}, lo, hi, 3.0f));  // beyond tMax
+
+    // Indexed render data matches the expanded triangle list.
+    Mesh sphere = primitives::uvSphere(1, 24, 16);
+    std::vector<RenderVertex> verts, flat;
+    std::vector<uint32_t> idx;
+    buildRenderMesh(sphere, sphere.verts, true, 40, -1, verts, idx);
+    buildRenderData(sphere, sphere.verts, true, 40, -1, flat);
+    CHECK(idx.size() == sphere.triangleCount() * 3 && flat.size() == idx.size());
+    CHECK(verts.size() < idx.size() / 2);  // smooth vertices are shared
+    bool same = true;
+    for (size_t k = 0; k < idx.size(); ++k)
+        same &= near(verts[idx[k]].pos, flat[k].pos) && near(verts[idx[k]].normal, flat[k].normal);
+    CHECK(same);
+    // Positions-only edits keep the topology stamp (cached edges stay valid).
+    uint64_t topo = sphere.topology, ver = sphere.version;
+    sphere.verts[0].y += 0.1f;
+    sphere.touchPositions();
+    CHECK(sphere.topology == topo && sphere.version != ver);
+    sphere.touch();
+    CHECK(sphere.topology != topo);
+}
+
 int main() {
     testMath();
     testPrimitives();
@@ -555,6 +659,7 @@ int main() {
     testSkinning();
     testParticles();
     testFilesV2();
+    testTransformApi();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

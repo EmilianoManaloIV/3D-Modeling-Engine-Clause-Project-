@@ -1,5 +1,6 @@
 #include "editor_internal.h"
 #include "skin.h"
+#include "profiler.h"
 
 #include <algorithm>
 #include <cmath>
@@ -182,67 +183,145 @@ void Editor::renderViewport() {
     collectLights(f);
 
     const int count = (int)scene_.objects.size();
+    // Positions are only needed when the GPU copy is out of date; otherwise
+    // skip evaluation (and with it CPU skinning) entirely.
+    static const std::vector<Vec3> kNoPositions;
+    auto meshInputs = [&](int i, bool rest, uint64_t key, Mat4& model) -> const std::vector<Vec3>& {
+        const Object& o = scene_.objects[i];
+        if (renderer_.isCached(o.id, key)) {
+            model = (!rest && isSkinned(o)) ? Mat4() : scene_.world(i);
+            return kNoPositions;
+        }
+        return evaluateMesh(scene_, i, rest, scratch_, model);
+    };
     for (int i = 0; i < count; ++i) {
         const Object& o = scene_.objects[i];
         if (!o.isMesh()) continue;
         const bool rest = mode_ == Mode::Edit && i == scene_.active;
         const int slot = shading_ == SHADE_WEIGHTS ? displayWeightSlot(o) : -1;
+        const uint64_t key = meshKey(i, rest, slot);
         Mat4 model;
-        const std::vector<Vec3>& pos = evaluateMesh(scene_, i, rest, scratch_, model);
+        const std::vector<Vec3>& pos = meshInputs(i, rest, key, model);
         MaterialParams mat;
         mat.color = o.color;
         Vec3 e = o.emission;
         mat.emission = Vec3(std::pow(e.x, 2.2f), std::pow(e.y, 2.2f), std::pow(e.z, 2.2f)) * o.emissionStrength;
         mat.gloss = o.gloss;
         mat.highlight = (mode_ == Mode::Object && o.selected) ? (i == scene_.active ? 1.0f : 0.6f) : 0.0f;
-        renderer_.drawMesh(o.id, meshKey(i, rest, slot), o.mesh, pos, o.smooth, slot, model, mat, f);
+        renderer_.drawMesh(o.id, key, o.mesh, pos, o.smooth, slot, model, mat, f);
     }
 
+    prof::count("objects", count);
     if (showGrid_) renderer_.drawLines(grid_, f, Mat4(), true, std::max(20.0f, cam_.distance * 3.0f), cam_.target);
 
-    for (int i = 0; i < count; ++i) {
-        const Object& o = scene_.objects[i];
-        if (!o.isMesh() || (mode_ == Mode::Edit && i == scene_.active)) continue;
-        bool selectedOutline = mode_ == Mode::Object && o.selected;
-        if (!selectedOutline && !wireframe_) continue;
-        const int slot = shading_ == SHADE_WEIGHTS ? displayWeightSlot(o) : -1;
-        Mat4 model;
-        const std::vector<Vec3>& pos = evaluateMesh(scene_, i, false, scratch_, model);
-        Color c = selectedOutline ? withAlpha(theme::selection, i == scene_.active ? 0.9f : 0.55f)
-                                  : Color{0.02f, 0.02f, 0.03f, 0.5f};
-        renderer_.drawMeshEdges(o.id, meshKey(i, false, slot), o.mesh, pos, o.smooth, slot, model, c, f);
+    // Wireframe overlay (only when asked for; edge buffers are built lazily).
+    if (wireframe_) {
+        PROF_SCOPE("wireframe");
+        for (int i = 0; i < count; ++i) {
+            const Object& o = scene_.objects[i];
+            if (!o.isMesh() || (mode_ == Mode::Edit && i == scene_.active)) continue;
+            const int slot = shading_ == SHADE_WEIGHTS ? displayWeightSlot(o) : -1;
+            const uint64_t key = meshKey(i, false, slot);
+            Mat4 model;
+            const bool cached = renderer_.edgesCached(o.id, key);
+            const std::vector<Vec3>& pos = cached ? kNoPositions : evaluateMesh(scene_, i, false, scratch_, model);
+            if (cached) model = isSkinned(o) ? Mat4() : scene_.world(i);
+            Color c = o.selected && mode_ == Mode::Object ? withAlpha(theme::selection, 0.8f) : Color{0.02f, 0.02f, 0.03f, 0.5f};
+            renderer_.drawMeshEdges(o.id, key, o.mesh, pos, o.smooth, slot, model, c, f);
+        }
+    }
+
+    // Selection outline (Unity style): mask of the selected meshes, then an
+    // outline around it. Constant cost whatever the mesh density.
+    if (mode_ == Mode::Object && scene_.selectedCount() > 0) {
+        PROF_SCOPE("selection outline");
+        const int vw = (int)viewport_.w, vh = (int)viewport_.h;
+        // Screen rectangle of the selection: the outline pass only runs there.
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        bool offscreen = false;
+        for (int i = 0; i < count && !offscreen; ++i) {
+            const Object& o = scene_.objects[i];
+            Vec3 lo, hi;
+            if (!o.isMesh() || !o.selected || !o.mesh.bounds(lo, hi)) continue;
+            if (isSkinned(o)) {
+                offscreen = true;  // posed skinned mesh can leave its rest bounds
+                break;
+            }
+            Mat4 w = scene_.world(i);
+            for (int c = 0; c < 8; ++c) {
+                Vec2 sp;
+                if (!worldToScreen(transformPoint(w, Vec3((c & 1) ? hi.x : lo.x, (c & 2) ? hi.y : lo.y,
+                                                          (c & 4) ? hi.z : lo.z)),
+                                   sp)) {
+                    offscreen = true;
+                    break;
+                }
+                x0 = std::min(x0, sp.x), y0 = std::min(y0, sp.y), x1 = std::max(x1, sp.x), y1 = std::max(y1, sp.y);
+            }
+        }
+        const float pad = 4.0f * dpi_ + 4.0f;
+        if (offscreen) x0 = y0 = -pad, x1 = (float)vw + pad, y1 = (float)vh + pad;
+        x0 = std::max(0.0f, x0 - pad), y0 = std::max(0.0f, y0 - pad);
+        x1 = std::min((float)vw, x1 + pad), y1 = std::min((float)vh, y1 + pad);
+        if (x1 > x0 && y1 > y0 && renderer_.beginOutlineMask(vw, vh)) {
+            for (int i = 0; i < count; ++i) {
+                const Object& o = scene_.objects[i];
+                if (!o.isMesh() || !o.selected) continue;
+                const int slot = shading_ == SHADE_WEIGHTS ? displayWeightSlot(o) : -1;
+                const uint64_t key = meshKey(i, false, slot);
+                Mat4 model;
+                const std::vector<Vec3>& pos = meshInputs(i, false, key, model);
+                renderer_.drawMeshMask(o.id, key, o.mesh, pos, o.smooth, slot, model, i == scene_.active ? 1.0f : 0.5f, f);
+            }
+            renderer_.endOutlineMask(vx, vy, vw, vh, vx + (int)x0, vy + (int)(vh - y1), (int)(x1 - x0) + 1,
+                                     (int)(y1 - y0) + 1, {1.0f, 0.62f, 0.12f, 1.0f}, {0.95f, 0.45f, 0.08f, 0.85f},
+                                     std::max(2.0f, 2.0f * dpi_));
+        }
     }
 
     if (mode_ == Mode::Edit && activeMesh()) {
+        PROF_SCOPE("edit overlay");
         const Object& o = *activeMesh();
         const auto& sel = vertSel();
-        if (editEdgesVersion_ != o.mesh.version) {
+        // Edges depend on topology only; the line/point buffers on positions and
+        // selection. Rebuild each only when its inputs change.
+        if (editEdgesVersion_ != o.mesh.topology || o.mesh.topology == 0) {
             editEdges_ = uniqueEdges(o.mesh);
-            editEdgesVersion_ = o.mesh.version;
+            editEdgesVersion_ = o.mesh.topology;
         }
-        std::vector<LineVertex> lines;
-        lines.reserve(editEdges_.size() * 2);
-        for (auto [a, b] : editEdges_) {
-            Color c = (sel[a] && sel[b]) ? theme::selection : kEdgeDark;
-            lines.push_back({o.mesh.verts[a], c});
-            lines.push_back({o.mesh.verts[b], c});
+        uint64_t selHash = 1469598103934665603ull;
+        for (char c : sel) selHash = (selHash ^ (uint8_t)c) * 1099511628211ull;
+        const uint64_t key = (o.mesh.version * 0x9E3779B97F4A7C15ull) ^ selHash ^ ((uint64_t)o.id << 40);
+        if (key != editOverlayKey_) {
+            editLines_.clear();
+            editLines_.reserve(editEdges_.size() * 2);
+            for (auto [a, b] : editEdges_) {
+                Color c = (sel[a] && sel[b]) ? theme::selection : kEdgeDark;
+                editLines_.push_back({o.mesh.verts[a], c});
+                editLines_.push_back({o.mesh.verts[b], c});
+            }
+            editPoints_.clear();
+            editPoints_.reserve(o.mesh.verts.size());
+            for (size_t v = 0; v < o.mesh.verts.size(); ++v)
+                editPoints_.push_back({o.mesh.verts[v], sel[v] ? theme::selection : Color{0.05f, 0.05f, 0.07f, 1}});
+            editOverlayKey_ = key;
         }
         Mat4 m = scene_.world(scene_.active);
-        renderer_.drawLines(lines, f, m, !wireframe_);
-        std::vector<LineVertex> points;
-        points.reserve(o.mesh.verts.size());
-        for (size_t v = 0; v < o.mesh.verts.size(); ++v)
-            points.push_back({o.mesh.verts[v], sel[v] ? theme::selection : Color{0.05f, 0.05f, 0.07f, 1}});
-        renderer_.drawPoints(points, f, m, 3.5f * fontScale_, !wireframe_);
+        renderer_.drawLinesCached(0, key, editLines_, f, m, !wireframe_, false, 1.0f);
+        renderer_.drawLinesCached(1, key, editPoints_, f, m, !wireframe_, true, 3.5f * fontScale_);
     }
 
     // Gizmos for lights, bones, empties and emitters (drawn on top).
     std::vector<LineVertex> gizmo;
     std::vector<ParticleVertex> glows;
-    appendGizmos(gizmo, glows);
+    {
+        PROF_SCOPE("gizmos");
+        appendGizmos(gizmo, glows);
+    }
     renderer_.drawLines(gizmo, f, Mat4(), false);
 
     // Particles: smoke (alpha blended) first, then glowing (additive) ones.
+    PROF_SCOPE("particle draw");
     std::vector<ParticleVertex> smoke, glow;
     for (int i = 0; i < count; ++i) {
         const Object& o = scene_.objects[i];

@@ -70,24 +70,63 @@ public:
     void drawParticles(const std::vector<ParticleVertex>& v, const FrameParams& f, bool additive);
     void drawUI(const UI& ui, int screenW, int screenH);
 
+    // True when drawMesh / drawMeshEdges with this key would not need their
+    // positions (GPU copy is current) - lets the caller skip CPU skinning.
+    bool isCached(uint32_t id, uint64_t key) const;
+    bool edgesCached(uint32_t id, uint64_t key) const;
+
+    // Unity-style selection outline: render selected meshes into a mask
+    // (value 1 = active, 0.5 = other selected), then draw an outline around
+    // the mask in the viewport. Cost is independent of mesh density.
+    bool beginOutlineMask(int viewportW, int viewportH);
+    void drawMeshMask(uint32_t cacheId, uint64_t cacheKey, const Mesh& mesh, const std::vector<Vec3>& positions,
+                      bool smooth, int weightSlot, const Mat4& model, float value, const FrameParams& f);
+    // (sx, sy, sw, sh): window-space scissor rectangle limiting the composite pass.
+    void endOutlineMask(int vx, int vy, int vw, int vh, int sx, int sy, int sw, int sh, Color active, Color other,
+                        float radiusPx);
+    // Lines / points kept in a persistent buffer per `slot`, re-uploaded only
+    // when `key` changes (edit-mode overlay of dense meshes).
+    void drawLinesCached(int slot, uint64_t key, const std::vector<LineVertex>& v, const FrameParams& f,
+                         const Mat4& model, bool depthTest, bool points, float pointSize);
+
     // Frees GPU buffers of objects that no longer exist.
     void purge(const Scene& scene);
     void readPixels(int w, int h, std::vector<uint8_t>& rgb);
 
 private:
     struct GpuMesh {
-        unsigned vao = 0, vbo = 0;
-        int triVerts = 0;
+        unsigned vao = 0, vbo = 0, ebo = 0;
+        int triVerts = 0;  // index count
         unsigned edgeVao = 0, edgeVbo = 0;
         int edgeVerts = 0;
         uint64_t key = ~0ull;
+        uint64_t edgeKey = ~0ull;                 // edge buffer is built lazily (only when drawn)
+        uint64_t edgeTopology = ~0ull;            // edge list depends on topology only
+        std::vector<std::pair<int, int>> edges;
     };
+    struct LineBatch {
+        unsigned vao = 0, vbo = 0;
+        uint64_t key = ~0ull;
+        int count = 0;
+    };
+    std::unordered_map<int, LineBatch> lineBatches_;
+    void drawBound(unsigned vao, int count, unsigned mode, const FrameParams& f, const Mat4& model, bool depthTest,
+                   float fadeRadius, Vec3 fadeCenter, float pointSize);
     GpuMesh& gpuMesh(uint32_t id, uint64_t key, const Mesh& mesh, const std::vector<Vec3>& positions, bool smooth,
                      int weightSlot);
     void drawLineList(const std::vector<LineVertex>& v, unsigned mode, const FrameParams& f, const Mat4& model,
                       bool depthTest, float fadeRadius, Vec3 fadeCenter, float pointSize);
 
-    unsigned meshProg_ = 0, lineProg_ = 0, uiProg_ = 0, particleProg_ = 0;
+    unsigned meshProg_ = 0, lineProg_ = 0, uiProg_ = 0, particleProg_ = 0, maskProg_ = 0, outlineProg_ = 0;
+    unsigned maskFbo_ = 0, maskTex_ = 0, emptyVao_ = 0;
+    int maskW_ = 0, maskH_ = 0;
+    bool maskOk_ = false;
+    struct {
+        int model, viewProj, value;
+    } maskU_{};
+    struct {
+        int mask, offset, size, radius, active, other;
+    } outlineU_{};
     struct {
         int model, viewProj, normalMatrix, color, emission, gloss, camPos, keyDir, fillDir, highlight, mode, ambient,
             lightCount, checker;
@@ -109,5 +148,6 @@ private:
     unsigned fontTex_ = 0, checkerTex_ = 0;
     std::unordered_map<uint32_t, GpuMesh> cache_;
     std::vector<RenderVertex> scratch_;
+    std::vector<uint32_t> scratchIndices_;
     std::vector<LineVertex> scratchLines_;
 };

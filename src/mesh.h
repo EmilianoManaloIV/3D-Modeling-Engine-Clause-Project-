@@ -31,16 +31,27 @@ struct BoneWeights {
 };
 
 struct Mesh {
+private:
+    mutable uint64_t cachedTriTopology_ = ~0ull, cachedBoundsVersion_ = ~0ull;
+    mutable size_t cachedTris_ = 0;
+    mutable Vec3 cachedLo_, cachedHi_;
+
+public:
     std::vector<Vec3> verts;
     std::vector<std::vector<int>> faces;
     std::vector<std::vector<Vec2>> uvs;  // empty, or parallel to faces (one UV per corner)
     std::vector<BoneWeights> weights;    // empty, or parallel to verts
-    // Globally unique content stamp. Any code that edits the mesh calls
-    // touch(); the renderer re-uploads GPU buffers when the stamp changes.
+    // Globally unique content stamps. Any code that edits the mesh calls
+    // touch() (bumps both); code that only moves vertices may call
+    // touchPositions() (bumps `version` only) so topology-derived data such as
+    // the edge list stays cached. The renderer re-uploads when `version` changes.
     uint64_t version = 0;
+    uint64_t topology = 0;
 
     void touch();
-    size_t triangleCount() const;
+    void touchPositions();
+    size_t triangleCount() const;  // cached per topology
+    bool bounds(Vec3& lo, Vec3& hi) const;  // cached per version; false if empty
     bool hasUVs() const { return !faces.empty() && uvs.size() == faces.size(); }
     bool hasWeights() const { return !verts.empty() && weights.size() == verts.size(); }
     void validate();  // drops attribute arrays that don't match the topology
@@ -96,6 +107,9 @@ std::vector<int> selectedFaces(const Mesh& m, const std::vector<char>& selection
 
 std::vector<std::pair<int, int>> uniqueEdges(const Mesh& m);
 
+// Ray vs axis-aligned box (slab test); t range of the hit in [0, tMax].
+bool rayHitsBox(Vec3 o, Vec3 d, Vec3 lo, Vec3 hi, float tMax = 1e30f);
+
 // Ray / mesh intersection (ray-triangle test of FoCG 5e sec. 4.4, in the
 // Moller-Trumbore form). The ray is o + t*d; returns the nearest t > 0.
 // `positions` overrides the mesh's own vertex positions (e.g. skinned pose).
@@ -112,5 +126,11 @@ struct RenderVertex {
     Vec2 uv;
     float weight;
 };
+// Indexed form used by the renderer: smooth vertices are shared between
+// faces (split only at UV seams / hard edges), cutting the GPU vertex count
+// and upload size several-fold on smooth meshes.
+void buildRenderMesh(const Mesh& m, const std::vector<Vec3>& positions, bool smooth, float smoothAngleDeg,
+                     int weightSlot, std::vector<RenderVertex>& vertices, std::vector<uint32_t>& indices);
+// Expanded (non-indexed) triangle list - three vertices per triangle.
 void buildRenderData(const Mesh& m, const std::vector<Vec3>& positions, bool smooth, float smoothAngleDeg,
                      int weightSlot, std::vector<RenderVertex>& out);

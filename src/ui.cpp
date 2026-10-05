@@ -133,6 +133,13 @@ void UI::line(float x0, float y0, float x1, float y1, float t, Color c) {
     vert(x0 - nx, y0 - ny, u, v, c);
 }
 
+void UI::triangle(Vec2 a, Vec2 b, Vec2 c, Color col) {
+    const float u = (font::kWhiteX + 0.5f) / font::kAtlasW, v = (font::kWhiteY + 0.5f) / font::kAtlasH;
+    vert(a.x, a.y, u, v, col);
+    vert(b.x, b.y, u, v, col);
+    vert(c.x, c.y, u, v, col);
+}
+
 float UI::textWidth(const std::string& s) const {
     return s.empty() ? 0.0f : (float)(s.size() * font::kCellW * fs - fs);
 }

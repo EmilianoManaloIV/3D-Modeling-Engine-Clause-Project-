@@ -4,6 +4,7 @@
 // function calls made every frame; the UI only keeps which widget is hot /
 // active / being typed into. Output is a list of textured quads that the
 // renderer draws in one pass with scissor rectangles for clipping.
+#include "math3d.h"
 #include "platform.h"
 
 #include <cstdint>
@@ -72,6 +73,7 @@ public:
     void rect(const Rect& r, Color c);
     void border(const Rect& r, Color c, float thickness);
     void line(float x0, float y0, float x1, float y1, float thickness, Color c);
+    void triangle(Vec2 a, Vec2 b, Vec2 c, Color col);
     void text(float x, float y, const std::string& s, Color c);
     void textIn(const Rect& r, const std::string& s, Color c, bool centered);
     void pushClip(const Rect& r);

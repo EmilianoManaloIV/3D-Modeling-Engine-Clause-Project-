@@ -353,19 +353,49 @@ void Editor::frameSelected() {
             }
         }
     }
+    Camera goal = cam_;
     if (!any) {
-        cam_.target = Vec3();
-        cam_.distance = 9.0f;
-        return;
+        goal.target = Vec3();
+        goal.distance = 9.0f;
+    } else {
+        float radius = std::max(0.5f, length(hi - lo) * 0.5f);
+        goal.target = (lo + hi) * 0.5f;
+        goal.distance = radius / std::sin(toRadians(cam_.fovY) * 0.5f) * 1.1f;
     }
-    float radius = std::max(0.5f, length(hi - lo) * 0.5f);
-    cam_.target = (lo + hi) * 0.5f;
-    cam_.distance = radius / std::sin(toRadians(cam_.fovY) * 0.5f) * 1.1f;
+    animateCameraTo(goal);
 }
 
 void Editor::setView(float yaw, float pitch) {
-    cam_.yaw = yaw;
-    cam_.pitch = pitch;
+    Camera goal = camAnimating_ ? camTo_ : cam_;
+    goal.yaw = yaw;
+    goal.pitch = pitch;
+    animateCameraTo(goal);
+}
+
+void Editor::animateCameraTo(const Camera& goal) {
+    camFrom_ = cam_;
+    camTo_ = goal;
+    // Take the short way round for the yaw.
+    float d = std::fmod(camTo_.yaw - camFrom_.yaw, 360.0f);
+    if (d > 180.0f) d -= 360.0f;
+    if (d < -180.0f) d += 360.0f;
+    camTo_.yaw = camFrom_.yaw + d;
+    cam_.ortho = goal.ortho;  // projection switches immediately
+    camAnimT_ = 0;
+    camAnimating_ = true;
+}
+
+void Editor::updateCameraAnimation(float dt) {
+    if (!camAnimating_) return;
+    const float duration = 0.3f;
+    camAnimT_ = std::min(1.0f, camAnimT_ + dt / duration);
+    float t = camAnimT_ * camAnimT_ * (3.0f - 2.0f * camAnimT_);  // smoothstep easing
+    cam_.target = lerp(camFrom_.target, camTo_.target, t);
+    cam_.distance = camFrom_.distance + (camTo_.distance - camFrom_.distance) * t;
+    cam_.yaw = camFrom_.yaw + (camTo_.yaw - camFrom_.yaw) * t;
+    cam_.pitch = camFrom_.pitch + (camTo_.pitch - camFrom_.pitch) * t;
+    cam_.fovY = camFrom_.fovY + (camTo_.fovY - camFrom_.fovY) * t;
+    if (camAnimT_ >= 1.0f) camAnimating_ = false;
 }
 
 // ============================================================================

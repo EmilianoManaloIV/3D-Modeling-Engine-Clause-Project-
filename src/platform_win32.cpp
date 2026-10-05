@@ -50,6 +50,7 @@ Input* g_input = nullptr;
 bool g_quit = false;
 int g_width = 0, g_height = 0;
 float g_dpi = 1.0f;
+SwapIntervalEXTFn g_swapInterval = nullptr;
 
 int translateKey(WPARAM vk) {
     if (vk >= 'A' && vk <= 'Z') return (int)vk;
@@ -244,7 +245,8 @@ bool init(const char* title, int width, int height, std::string& error) {
         return false;
     }
     wglMakeCurrent(g_hdc, g_glrc);
-    if (auto swapInterval = (SwapIntervalEXTFn)(void*)wglGetProcAddress("wglSwapIntervalEXT")) swapInterval(1);
+    g_swapInterval = (SwapIntervalEXTFn)(void*)wglGetProcAddress("wglSwapIntervalEXT");
+    if (g_swapInterval) g_swapInterval(1);
 
     g_opengl32 = LoadLibraryA("opengl32.dll");
 
@@ -284,6 +286,10 @@ void processEvents(Input& input) {
 bool quitRequested() { return g_quit; }
 void clearQuitRequest() { g_quit = false; }
 void swapBuffers() { SwapBuffers(g_hdc); }
+
+void setVSync(bool on) {
+    if (g_swapInterval) g_swapInterval(on ? 1 : 0);
+}
 
 void getFramebufferSize(int& w, int& h) {
     w = g_width;

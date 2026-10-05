@@ -2,21 +2,16 @@
 
 #include "skin.h"
 
+#include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
-#include <sstream>
+#include <cstring>
+#include <string_view>
 #include <unordered_map>
 
 namespace {
-std::string trim(const std::string& s) {
-    size_t a = 0, b = s.size();
-    while (a < b && std::isspace((unsigned char)s[a])) ++a;
-    while (b > a && std::isspace((unsigned char)s[b - 1])) --b;
-    return s.substr(a, b - a);
-}
-
 std::string baseName(const std::string& path) {
     size_t slash = path.find_last_of("/\\");
     std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
@@ -93,11 +88,30 @@ size_t Scene::triangleCount() const {
     return n;
 }
 
+void Scene::rebuildIdCache() const {
+    idCache_.clear();
+    idCache_.reserve(objects.size() * 2);
+    for (int i = 0; i < (int)objects.size(); ++i) idCache_[objects[i].id] = i;
+    cacheSize_ = objects.size();
+    cacheData_ = objects.data();
+    cacheFirst_ = objects.empty() ? 0 : objects.front().id;
+    cacheLast_ = objects.empty() ? 0 : objects.back().id;
+}
+
+bool Scene::idCacheCurrent() const {
+    return cacheSize_ == objects.size() && cacheData_ == objects.data() &&
+           cacheFirst_ == (objects.empty() ? 0 : objects.front().id) &&
+           cacheLast_ == (objects.empty() ? 0 : objects.back().id);
+}
+
 int Scene::indexOf(uint32_t id) const {
     if (id == 0) return -1;
-    for (int i = 0; i < (int)objects.size(); ++i)
-        if (objects[i].id == id) return i;
-    return -1;
+    auto it = idCache_.find(id);
+    if (it != idCache_.end() && it->second < (int)objects.size() && objects[it->second].id == id) return it->second;
+    if (it == idCache_.end() && idCacheCurrent()) return -1;  // genuinely absent
+    rebuildIdCache();
+    it = idCache_.find(id);
+    return it == idCache_.end() ? -1 : it->second;
 }
 
 int Scene::parentIndex(int i) const { return indexOf(objects[i].parent); }
@@ -111,6 +125,30 @@ Mat4 Scene::world(int i) const {
         p = parentIndex(p);
     }
     return m;
+}
+
+void Scene::computeWorlds(std::vector<Mat4>& out) const {
+    const int n = (int)objects.size();
+    out.assign(n, Mat4());
+    std::vector<char> state(n, 0);  // 0 = todo, 1 = in progress, 2 = done
+    std::vector<int> stack;
+    for (int start = 0; start < n; ++start) {
+        if (state[start] == 2) continue;
+        stack.push_back(start);
+        while (!stack.empty()) {
+            int i = stack.back();
+            int p = parentIndex(i);
+            if (p >= 0 && state[p] == 0) {  // parent first
+                state[i] = 1;
+                stack.push_back(p);
+                continue;
+            }
+            Mat4 local = objects[i].matrix();
+            out[i] = (p >= 0 && state[p] == 2) ? out[p] * local : local;
+            state[i] = 2;
+            stack.pop_back();
+        }
+    }
 }
 
 Mat4 Scene::parentWorld(int i) const {
@@ -156,8 +194,26 @@ int pickObject(const Scene& scene, Vec3 origin, Vec3 dir, float* tOut) {
     int best = -1;
     float bestT = 1e30f;
     std::vector<Vec3> scratch;
+    std::vector<Mat4> worlds;
+    scene.computeWorlds(worlds);
     for (int i = 0; i < (int)scene.objects.size(); ++i) {
-        if (!scene.objects[i].isMesh()) continue;
+        const Object& o = scene.objects[i];
+        if (!o.isMesh()) continue;
+        // Cheap rejection first: ray vs the mesh's local bounding box (posed
+        // skinned meshes skip it - their pose can leave the rest bounds).
+        Vec3 lo, hi;
+        if (!isSkinned(o)) {
+            if (!o.mesh.bounds(lo, hi)) continue;
+            Mat4 inv = inverse(worlds[i]);
+            Vec3 lo2 = transformPoint(inv, origin), ld = transformDir(inv, dir);
+            if (!rayHitsBox(lo2, ld, lo, hi, bestT)) continue;
+            float t;
+            if (raycastMesh(o.mesh, o.mesh.verts, lo2, ld, t) && t < bestT) {
+                bestT = t;
+                best = i;
+            }
+            continue;
+        }
         Mat4 model;
         const std::vector<Vec3>& pos = evaluateMesh(scene, i, false, scratch, model);
         // Transform the ray into the mesh's space instead of the mesh into
@@ -165,8 +221,7 @@ int pickObject(const Scene& scene, Vec3 origin, Vec3 dir, float* tOut) {
         // is preserved by the affine map, so hits stay comparable.
         Mat4 inv = inverse(model);
         float t;
-        if (raycastMesh(scene.objects[i].mesh, pos, transformPoint(inv, origin), transformDir(inv, dir), t) &&
-            t < bestT) {
+        if (raycastMesh(o.mesh, pos, transformPoint(inv, origin), transformDir(inv, dir), t) && t < bestT) {
             bestT = t;
             best = i;
         }
@@ -176,14 +231,124 @@ int pickObject(const Scene& scene, Vec3 origin, Vec3 dir, float* tOut) {
 }
 
 // ---------------------------------------------------------------------------
+// Fast text I/O helpers. The original version used fprintf per number and an
+// istringstream per line; on a 131k-quad mesh that took 1.3 s to save and
+// 4.5 s to load (see docs/performance.md). Now: one growing buffer, numbers
+// via std::to_chars / std::from_chars (locale-free, shortest round-trip
+// floats), one fwrite / one fread.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct TextOut {
+    std::string buf;
+    void raw(const char* s) { buf += s; }
+    void str(const std::string& s) { buf += s; }
+    void ch(char c) { buf.push_back(c); }
+    void num(float v) {
+        char tmp[32];
+        auto r = std::to_chars(tmp, tmp + sizeof tmp, v);
+        buf.append(tmp, r.ptr);
+    }
+    void num(int v) {
+        char tmp[16];
+        auto r = std::to_chars(tmp, tmp + sizeof tmp, v);
+        buf.append(tmp, r.ptr);
+    }
+    void nums(std::initializer_list<float> vs) {
+        for (float v : vs) {
+            ch(' ');
+            num(v);
+        }
+    }
+    bool writeTo(const std::string& path) const {
+        FILE* f = std::fopen(path.c_str(), "wb");
+        if (!f) return false;
+        bool ok = std::fwrite(buf.data(), 1, buf.size(), f) == buf.size();
+        ok = (std::fclose(f) == 0) && ok;
+        return ok;
+    }
+};
+
+bool readFile(const std::string& path, std::string& out) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    out.resize(size > 0 ? (size_t)size : 0);
+    size_t got = out.empty() ? 0 : std::fread(&out[0], 1, out.size(), f);
+    std::fclose(f);
+    out.resize(got);
+    return true;
+}
+
+// Tokenizer over one line.
+struct Cursor {
+    const char* p;
+    const char* end;
+    void skip() {
+        while (p < end && (*p == ' ' || *p == '\t')) ++p;
+    }
+    bool atEnd() {
+        skip();
+        return p >= end;
+    }
+    std::string_view word() {
+        skip();
+        const char* s = p;
+        while (p < end && *p != ' ' && *p != '\t') ++p;
+        return {s, size_t(p - s)};
+    }
+    bool f(float& v) {
+        skip();
+        if (p < end && *p == '+') ++p;
+        auto r = std::from_chars(p, end, v);
+        if (r.ec != std::errc()) return false;
+        p = r.ptr;
+        return true;
+    }
+    bool i(int& v) {
+        skip();
+        if (p < end && *p == '+') ++p;
+        auto r = std::from_chars(p, end, v);
+        if (r.ec != std::errc()) return false;
+        p = r.ptr;
+        return true;
+    }
+    bool v3(Vec3& v) { return f(v.x) && f(v.y) && f(v.z); }
+    std::string rest() {
+        skip();
+        const char* e = end;
+        while (e > p && std::isspace((unsigned char)e[-1])) --e;
+        return std::string(p, e);
+    }
+};
+
+// Calls fn(Cursor&) for every non-empty, non-comment line.
+template <class Fn>
+void forEachLine(const std::string& text, Fn fn) {
+    const char* p = text.data();
+    const char* end = p + text.size();
+    while (p < end) {
+        const char* e = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
+        if (!e) e = end;
+        const char* le = e;
+        if (le > p && le[-1] == '\r') --le;
+        Cursor c{p, le};
+        c.skip();
+        if (c.p < c.end && *c.p != '#') {
+            if (!fn(c)) return;
+        }
+        p = e + 1;
+    }
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
 // Native format
 // ---------------------------------------------------------------------------
 bool saveScene(const Scene& scene, const std::string& path, std::string& err) {
-    FILE* f = std::fopen(path.c_str(), "wb");
-    if (!f) {
-        err = "Cannot write '" + path + "'";
-        return false;
-    }
     std::unordered_map<uint32_t, int> fileIndex;
     for (int i = 0; i < (int)scene.objects.size(); ++i) fileIndex[scene.objects[i].id] = i;
     auto idx = [&](uint32_t id) {
@@ -191,108 +356,147 @@ bool saveScene(const Scene& scene, const std::string& path, std::string& err) {
         return it == fileIndex.end() ? -1 : it->second;
     };
 
-    std::fprintf(f, "# Modeler3D scene\nmodeler3d 2\n");
-    std::fprintf(f, "ambient %.4g %.4g %.4g\n", scene.ambient.x, scene.ambient.y, scene.ambient.z);
+    TextOut out;
+    size_t estimate = 256;
+    for (const Object& o : scene.objects) estimate += o.mesh.verts.size() * 40 + o.mesh.faces.size() * 60;
+    out.buf.reserve(estimate);
+    out.raw("# Modeler3D scene\nmodeler3d 2\nambient");
+    out.nums({scene.ambient.x, scene.ambient.y, scene.ambient.z});
+    out.ch('\n');
     for (const Object& o : scene.objects) {
-        std::fprintf(f, "object %s\n", o.name.c_str());
-        std::fprintf(f, "kind %s\n", kKindNames[(int)o.kind]);
-        std::fprintf(f, "parent %d\n", idx(o.parent));
-        std::fprintf(f, "position %.7g %.7g %.7g\n", o.position.x, o.position.y, o.position.z);
-        std::fprintf(f, "rotation %.7g %.7g %.7g\n", o.rotation.x, o.rotation.y, o.rotation.z);
-        std::fprintf(f, "scale %.7g %.7g %.7g\n", o.scale.x, o.scale.y, o.scale.z);
-        std::fprintf(f, "color %.4g %.4g %.4g\n", o.color.x, o.color.y, o.color.z);
-        std::fprintf(f, "emission %.4g %.4g %.4g %.4g\n", o.emission.x, o.emission.y, o.emission.z,
-                     o.emissionStrength);
-        std::fprintf(f, "gloss %.4g\n", o.gloss);
-        std::fprintf(f, "smooth %d\n", o.smooth ? 1 : 0);
+        out.raw("object ");
+        out.str(o.name);
+        out.raw("\nkind ");
+        out.raw(kKindNames[(int)o.kind]);
+        out.raw("\nparent ");
+        out.num(idx(o.parent));
+        out.raw("\nposition");
+        out.nums({o.position.x, o.position.y, o.position.z});
+        out.raw("\nrotation");
+        out.nums({o.rotation.x, o.rotation.y, o.rotation.z});
+        out.raw("\nscale");
+        out.nums({o.scale.x, o.scale.y, o.scale.z});
+        out.raw("\ncolor");
+        out.nums({o.color.x, o.color.y, o.color.z});
+        out.raw("\nemission");
+        out.nums({o.emission.x, o.emission.y, o.emission.z, o.emissionStrength});
+        out.raw("\ngloss");
+        out.nums({o.gloss});
+        out.raw("\nsmooth ");
+        out.num(o.smooth ? 1 : 0);
         const LightSettings& L = o.light;
-        std::fprintf(f, "light %d %.4g %.4g %.4g %.6g %.6g %.6g %.6g\n", (int)L.type, L.color.x, L.color.y,
-                     L.color.z, L.intensity, L.range, L.spotAngle, L.spotBlend);
-        std::fprintf(f, "bone %.7g\n", o.boneLength);
-        if (o.hasRest)
-            std::fprintf(f, "rest %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g\n", o.restPosition.x,
-                         o.restPosition.y, o.restPosition.z, o.restRotation.x, o.restRotation.y, o.restRotation.z,
-                         o.restScale.x, o.restScale.y, o.restScale.z);
+        out.raw("\nlight ");
+        out.num((int)L.type);
+        out.nums({L.color.x, L.color.y, L.color.z, L.intensity, L.range, L.spotAngle, L.spotBlend});
+        out.raw("\nbone");
+        out.nums({o.boneLength});
+        out.ch('\n');
+        if (o.hasRest) {
+            out.raw("rest");
+            out.nums({o.restPosition.x, o.restPosition.y, o.restPosition.z, o.restRotation.x, o.restRotation.y,
+                      o.restRotation.z, o.restScale.x, o.restScale.y, o.restScale.z});
+            out.ch('\n');
+        }
         const ParticleSettings& P = o.particles;
-        std::fprintf(f, "particles %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %d\n", P.rate, P.lifetime, P.speed,
-                     P.spread, P.gravity, P.drag, P.startSize, P.endSize, P.radius, P.startColor.x, P.startColor.y,
-                     P.startColor.z, P.endColor.x, P.endColor.y, P.endColor.z, P.additive ? 1 : 0);
+        out.raw("particles");
+        out.nums({P.rate, P.lifetime, P.speed, P.spread, P.gravity, P.drag, P.startSize, P.endSize, P.radius,
+                  P.startColor.x, P.startColor.y, P.startColor.z, P.endColor.x, P.endColor.y, P.endColor.z});
+        out.raw(P.additive ? " 1\n" : " 0\n");
         if (o.param.active()) {
-            std::fprintf(f, "param %d", o.param.shape);
-            for (float v : o.param.p) std::fprintf(f, " %.7g", v);
-            std::fprintf(f, " %d %.7g %.7g\n", o.param.subdivisions, o.param.twist, o.param.taper);
+            out.raw("param ");
+            out.num(o.param.shape);
+            for (float v : o.param.p) out.nums({v});
+            out.ch(' ');
+            out.num(o.param.subdivisions);
+            out.nums({o.param.twist, o.param.taper});
+            out.ch('\n');
         }
         if (!o.skinBones.empty()) {
-            std::fprintf(f, "skin %d", (int)o.skinBones.size());
-            for (uint32_t b : o.skinBones) std::fprintf(f, " %d", idx(b));
-            std::fputc('\n', f);
+            out.raw("skin ");
+            out.num((int)o.skinBones.size());
+            for (uint32_t b : o.skinBones) {
+                out.ch(' ');
+                out.num(idx(b));
+            }
+            out.ch('\n');
             for (size_t s = 0; s < o.bindInverse.size(); ++s) {
-                std::fprintf(f, "bind %d", (int)s);
-                for (float v : o.bindInverse[s].m) std::fprintf(f, " %.9g", v);
-                std::fputc('\n', f);
+                out.raw("bind ");
+                out.num((int)s);
+                for (float v : o.bindInverse[s].m) out.nums({v});
+                out.ch('\n');
             }
         }
-        for (const Vec3& v : o.mesh.verts) std::fprintf(f, "v %.7g %.7g %.7g\n", v.x, v.y, v.z);
+        for (const Vec3& v : o.mesh.verts) {
+            out.ch('v');
+            out.nums({v.x, v.y, v.z});
+            out.ch('\n');
+        }
         for (const auto& face : o.mesh.faces) {
-            std::fputc('f', f);
-            for (int i : face) std::fprintf(f, " %d", i);
-            std::fputc('\n', f);
+            out.ch('f');
+            for (int i : face) {
+                out.ch(' ');
+                out.num(i);
+            }
+            out.ch('\n');
         }
         if (o.mesh.hasUVs())
             for (const auto& uvs : o.mesh.uvs) {
-                std::fputc('t', f);
-                for (const Vec2& t : uvs) std::fprintf(f, " %.6g %.6g", t.x, t.y);
-                std::fputc('\n', f);
+                out.ch('t');
+                for (const Vec2& t : uvs) out.nums({t.x, t.y});
+                out.ch('\n');
             }
         if (o.mesh.hasWeights())
             for (size_t v = 0; v < o.mesh.weights.size(); ++v) {
                 const BoneWeights& w = o.mesh.weights[v];
                 if (w.total() <= 0) continue;
-                std::fprintf(f, "w %d", (int)v);
-                for (int k = 0; k < 4; ++k) std::fprintf(f, " %d %.5g", w.bone[k], w.w[k]);
-                std::fputc('\n', f);
+                out.raw("w ");
+                out.num((int)v);
+                for (int k = 0; k < 4; ++k) {
+                    out.ch(' ');
+                    out.num(w.bone[k]);
+                    out.nums({w.w[k]});
+                }
+                out.ch('\n');
             }
-        std::fprintf(f, "end\n");
+        out.raw("end\n");
     }
-    bool ok = !std::ferror(f);
-    std::fclose(f);
-    if (!ok) err = "Error while writing '" + path + "'";
-    return ok;
+    if (!out.writeTo(path)) {
+        err = "Cannot write '" + path + "'";
+        return false;
+    }
+    return true;
 }
 
 bool loadScene(Scene& scene, const std::string& path, std::string& err) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
+    std::string text;
+    if (!readFile(path, text)) {
         err = "Cannot open '" + path + "'";
         return false;
     }
     Scene result;
     result.nextId = scene.nextId;
-    std::vector<int> parentIdx;                 // per object: file index of the parent
-    std::vector<std::vector<int>> skinIdx;      // per object: file indices of skin bones
+    std::vector<int> parentIdx;             // per object: file index of the parent
+    std::vector<std::vector<int>> skinIdx;  // per object: file indices of skin bones
     Object* cur = nullptr;
     bool header = false;
-    std::string line;
     int lineNo = 0;
+    bool failed = false;
     auto fail = [&](const std::string& what) {
         err = path + ":" + std::to_string(lineNo) + ": " + what;
+        failed = true;
         return false;
     };
-    while (std::getline(file, line)) {
+    forEachLine(text, [&](Cursor& c) -> bool {
         ++lineNo;
-        line = trim(line);
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream ss(line);
-        std::string key;
-        ss >> key;
+        std::string_view key = c.word();
         if (key == "modeler3d") {
             header = true;
         } else if (!header) {
             return fail("not a Modeler3D scene file");
         } else if (key == "ambient") {
-            ss >> result.ambient.x >> result.ambient.y >> result.ambient.z;
+            c.v3(result.ambient);
         } else if (key == "object") {
-            std::string name = trim(line.substr(6));
+            std::string name = c.rest();
             Object o;
             o.id = result.nextId++;
             o.name = name.empty() ? std::string("Object") : name;
@@ -302,38 +506,61 @@ bool loadScene(Scene& scene, const std::string& path, std::string& err) {
             cur = &result.objects.back();
         } else if (!cur) {
             return fail("data outside of an object block");
+        } else if (key == "v") {  // hot path first
+            Vec3 v;
+            if (!c.v3(v)) return fail("bad vertex");
+            cur->mesh.verts.push_back(v);
+        } else if (key == "f") {
+            std::vector<int> face;
+            int i;
+            while (c.i(i)) {
+                if (i < 0 || i >= (int)cur->mesh.verts.size()) return fail("face index out of range");
+                face.push_back(i);
+            }
+            if (face.size() >= 3) cur->mesh.faces.push_back(std::move(face));
+        } else if (key == "t") {
+            std::vector<Vec2> uvs;
+            Vec2 t;
+            while (c.f(t.x) && c.f(t.y)) uvs.push_back(t);
+            cur->mesh.uvs.push_back(std::move(uvs));
+        } else if (key == "w") {
+            int v = -1;
+            c.i(v);
+            if (v < 0 || v >= (int)cur->mesh.verts.size()) return fail("weight vertex out of range");
+            cur->mesh.weights.resize(cur->mesh.verts.size());
+            BoneWeights& w = cur->mesh.weights[v];
+            for (int k = 0; k < 4; ++k) c.i(w.bone[k]) && c.f(w.w[k]);
         } else if (key == "kind") {
-            std::string k;
-            ss >> k;
+            std::string_view k = c.word();
             for (int i = 0; i < 5; ++i)
                 if (k == kKindNames[i]) cur->kind = (ObjectKind)i;
         } else if (key == "parent") {
-            ss >> parentIdx.back();
+            c.i(parentIdx.back());
         } else if (key == "position" || key == "rotation" || key == "scale" || key == "color") {
             Vec3 v;
-            if (!(ss >> v.x >> v.y >> v.z)) return fail("expected three numbers");
+            if (!c.v3(v)) return fail("expected three numbers");
             if (key == "position") cur->position = v;
             else if (key == "rotation") cur->rotation = v;
             else if (key == "scale") cur->scale = v;
             else cur->color = v;
         } else if (key == "emission") {
-            ss >> cur->emission.x >> cur->emission.y >> cur->emission.z >> cur->emissionStrength;
+            c.v3(cur->emission) && c.f(cur->emissionStrength);
         } else if (key == "gloss") {
-            ss >> cur->gloss;
+            c.f(cur->gloss);
         } else if (key == "smooth") {
             int s = 1;
-            ss >> s;
+            c.i(s);
             cur->smooth = s != 0;
         } else if (key == "light") {
             int type = 0;
             LightSettings& L = cur->light;
-            ss >> type >> L.color.x >> L.color.y >> L.color.z >> L.intensity >> L.range >> L.spotAngle >> L.spotBlend;
+            c.i(type) && c.v3(L.color) && c.f(L.intensity) && c.f(L.range) && c.f(L.spotAngle) && c.f(L.spotBlend);
             L.type = (LightType)std::max(0, std::min(2, type));
         } else if (key == "bone") {
-            ss >> cur->boneLength;
+            c.f(cur->boneLength);
         } else if (key == "rest") {
             Vec3 p, r, s;
-            if (ss >> p.x >> p.y >> p.z >> r.x >> r.y >> r.z >> s.x >> s.y >> s.z) {
+            if (c.v3(p) && c.v3(r) && c.v3(s)) {
                 cur->hasRest = true;
                 cur->restPosition = p;
                 cur->restRotation = r;
@@ -342,61 +569,37 @@ bool loadScene(Scene& scene, const std::string& path, std::string& err) {
         } else if (key == "particles") {
             ParticleSettings& P = cur->particles;
             int additive = 1;
-            ss >> P.rate >> P.lifetime >> P.speed >> P.spread >> P.gravity >> P.drag >> P.startSize >> P.endSize >>
-                P.radius >> P.startColor.x >> P.startColor.y >> P.startColor.z >> P.endColor.x >> P.endColor.y >>
-                P.endColor.z >> additive;
+            c.f(P.rate) && c.f(P.lifetime) && c.f(P.speed) && c.f(P.spread) && c.f(P.gravity) && c.f(P.drag) &&
+                c.f(P.startSize) && c.f(P.endSize) && c.f(P.radius) && c.v3(P.startColor) && c.v3(P.endColor) &&
+                c.i(additive);
             P.additive = additive != 0;
         } else if (key == "param") {
             ParametricSpec& s = cur->param;
-            ss >> s.shape;
-            for (float& v : s.p) ss >> v;
-            ss >> s.subdivisions >> s.twist >> s.taper;
-            if (!ss || !s.active()) s = ParametricSpec();
+            bool ok = c.i(s.shape);
+            for (float& v : s.p) ok = ok && c.f(v);
+            ok = ok && c.i(s.subdivisions) && c.f(s.twist) && c.f(s.taper);
+            if (!ok || !s.active()) s = ParametricSpec();
         } else if (key == "skin") {
             int n = 0;
-            ss >> n;
+            c.i(n);
             for (int i = 0; i < n; ++i) {
                 int b = -1;
-                ss >> b;
+                c.i(b);
                 skinIdx.back().push_back(b);
             }
         } else if (key == "bind") {
             int slot = -1;
-            ss >> slot;
+            c.i(slot);
             if (slot < 0 || slot > 4096) return fail("bad bind slot");
             if ((int)cur->bindInverse.size() <= slot) cur->bindInverse.resize(slot + 1);
-            for (float& v : cur->bindInverse[slot].m) ss >> v;
-        } else if (key == "v") {
-            Vec3 v;
-            if (!(ss >> v.x >> v.y >> v.z)) return fail("bad vertex");
-            cur->mesh.verts.push_back(v);
-        } else if (key == "f") {
-            std::vector<int> face;
-            int i;
-            while (ss >> i) {
-                if (i < 0 || i >= (int)cur->mesh.verts.size()) return fail("face index out of range");
-                face.push_back(i);
-            }
-            if (face.size() >= 3) cur->mesh.faces.push_back(std::move(face));
-        } else if (key == "t") {
-            std::vector<Vec2> uvs;
-            Vec2 t;
-            while (ss >> t.x >> t.y) uvs.push_back(t);
-            cur->mesh.uvs.push_back(std::move(uvs));
-        } else if (key == "w") {
-            int v = -1;
-            ss >> v;
-            if (v < 0 || v >= (int)cur->mesh.verts.size()) return fail("weight vertex out of range");
-            cur->mesh.weights.resize(cur->mesh.verts.size());
-            BoneWeights& w = cur->mesh.weights[v];
-            for (int k = 0; k < 4; ++k) ss >> w.bone[k] >> w.w[k];
+            for (float& v : cur->bindInverse[slot].m) c.f(v);
         } else if (key == "end") {
-            cur->mesh.validate();
-            cur->mesh.touch();
             cur = nullptr;
         }
         // Unknown keys are ignored for forward compatibility.
-    }
+        return true;
+    });
+    if (failed) return false;
     if (!header) {
         err = "'" + path + "' is empty or not a Modeler3D scene";
         return false;
@@ -436,17 +639,11 @@ bool exportOBJ(const Scene& scene, const std::string& path, std::string& err, in
     mtlPath += ".mtl";
     std::string mtlName = mtlPath.substr(slash == std::string::npos ? 0 : slash + 1);
 
-    FILE* f = std::fopen(path.c_str(), "wb");
-    if (!f) {
-        err = "Cannot write '" + path + "'";
-        return false;
-    }
-    FILE* mtl = std::fopen(mtlPath.c_str(), "wb");
-    std::fprintf(f, "# Exported by Modeler3D\n");
-    if (mtl) {
-        std::fprintf(f, "mtllib %s\n", mtlName.c_str());
-        std::fprintf(mtl, "# Materials exported by Modeler3D\n");
-    }
+    TextOut out, mtl;
+    out.raw("# Exported by Modeler3D\nmtllib ");
+    out.str(mtlName);
+    out.ch('\n');
+    mtl.raw("# Materials exported by Modeler3D\n");
 
     int base = 1, uvBase = 1, count = 0;
     std::vector<Vec3> scratch;
@@ -456,55 +653,76 @@ bool exportOBJ(const Scene& scene, const std::string& path, std::string& err, in
         std::string name = sanitize(o.name);
         Mat4 model;
         const std::vector<Vec3>& pos = evaluateMesh(scene, oi, false, scratch, model);
-        std::fprintf(f, "o %s\n", name.c_str());
+        out.buf.reserve(out.buf.size() + pos.size() * 40 + o.mesh.faces.size() * 50);
+        out.raw("o ");
+        out.str(name);
+        out.ch('\n');
         for (const Vec3& v : pos) {
             Vec3 w = transformPoint(model, v);
-            std::fprintf(f, "v %.6f %.6f %.6f\n", w.x, w.y, w.z);
+            out.ch('v');
+            out.nums({w.x, w.y, w.z});
+            out.ch('\n');
         }
         const bool uvs = o.mesh.hasUVs();
         if (uvs)
             for (const auto& faceUVs : o.mesh.uvs)
-                for (const Vec2& t : faceUVs) std::fprintf(f, "vt %.6f %.6f\n", t.x, t.y);
-        if (mtl) {
-            std::fprintf(mtl, "\nnewmtl %s_mat\nKa 0 0 0\nKd %.4f %.4f %.4f\nKs 0.2 0.2 0.2\nNs %.1f\nd 1\nillum 2\n",
-                         name.c_str(), o.color.x, o.color.y, o.color.z, 8.0f + o.gloss * 120.0f);
-            if (o.emissionStrength > 0)
-                std::fprintf(mtl, "Ke %.4f %.4f %.4f\n", o.emission.x * o.emissionStrength,
-                             o.emission.y * o.emissionStrength, o.emission.z * o.emissionStrength);
-            std::fprintf(f, "usemtl %s_mat\n", name.c_str());
+                for (const Vec2& t : faceUVs) {
+                    out.raw("vt");
+                    out.nums({t.x, t.y});
+                    out.ch('\n');
+                }
+        mtl.raw("\nnewmtl ");
+        mtl.str(name);
+        mtl.raw("_mat\nKa 0 0 0\nKd");
+        mtl.nums({o.color.x, o.color.y, o.color.z});
+        mtl.raw("\nKs 0.2 0.2 0.2\nNs");
+        mtl.nums({8.0f + o.gloss * 120.0f});
+        mtl.raw("\nd 1\nillum 2\n");
+        if (o.emissionStrength > 0) {
+            mtl.raw("Ke");
+            mtl.nums({o.emission.x * o.emissionStrength, o.emission.y * o.emissionStrength,
+                      o.emission.z * o.emissionStrength});
+            mtl.ch('\n');
         }
-        std::fprintf(f, "s %s\n", o.smooth ? "1" : "off");
+        out.raw("usemtl ");
+        out.str(name);
+        out.raw(o.smooth ? "_mat\ns 1\n" : "_mat\ns off\n");
         int corner = uvBase;
         for (const auto& face : o.mesh.faces) {
-            std::fputc('f', f);
+            out.ch('f');
             for (int i : face) {
-                if (uvs) std::fprintf(f, " %d/%d", i + base, corner++);
-                else std::fprintf(f, " %d", i + base);
+                out.ch(' ');
+                out.num(i + base);
+                if (uvs) {
+                    out.ch('/');
+                    out.num(corner++);
+                }
             }
-            std::fputc('\n', f);
+            out.ch('\n');
         }
         base += (int)pos.size();
         uvBase = corner;
         ++count;
     }
-    bool ok = !std::ferror(f);
-    std::fclose(f);
-    if (mtl) std::fclose(mtl);
-    if (!ok) err = "Error while writing '" + path + "'";
+    if (!out.writeTo(path)) {
+        err = "Cannot write '" + path + "'";
+        return false;
+    }
+    mtl.writeTo(mtlPath);  // optional companion file
     if (exportedCount) *exportedCount = count;
-    return ok;
+    return true;
 }
 
 bool importOBJ(Scene& scene, const std::string& path, std::string& err, int* firstNewIndex) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
+    std::string text;
+    if (!readFile(path, text)) {
         err = "Cannot open '" + path + "'";
         return false;
     }
     struct Group {
         std::string name;
-        std::vector<std::vector<int>> faces;     // global, 0-based
-        std::vector<std::vector<int>> faceUVs;   // global vt indices, -1 if missing
+        std::vector<std::vector<int>> faces;    // global, 0-based
+        std::vector<std::vector<int>> faceUVs;  // global vt indices, -1 if missing
     };
     std::vector<Vec3> verts;
     std::vector<Vec2> texcoords;
@@ -512,32 +730,36 @@ bool importOBJ(Scene& scene, const std::string& path, std::string& err, int* fir
     groups[0].name = baseName(path);
 
     auto resolve = [](int idx, int count) { return idx < 0 ? count + idx : idx - 1; };
-    std::string line;
-    while (std::getline(file, line)) {
-        line = trim(line);
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream ss(line);
-        std::string key;
-        ss >> key;
+    forEachLine(text, [&](Cursor& c) -> bool {
+        std::string_view key = c.word();
         if (key == "v") {
             Vec3 v;
-            if (ss >> v.x >> v.y >> v.z) verts.push_back(v);
+            if (c.v3(v)) verts.push_back(v);
         } else if (key == "vt") {
             Vec2 t;
-            if (ss >> t.x >> t.y) texcoords.push_back(t);
+            if (c.f(t.x) && c.f(t.y)) texcoords.push_back(t);
         } else if (key == "f") {
             std::vector<int> face, fuv;
-            std::string tok;
             bool ok = true;
-            while (ss >> tok) {  // "7", "7/2", "7//3", "7/2/3"
-                int idx = resolve(std::atoi(tok.c_str()), (int)verts.size());
-                if (idx < 0 || idx >= (int)verts.size()) { ok = false; break; }
+            while (!c.atEnd()) {  // "7", "7/2", "7//3", "7/2/3"
+                std::string_view tok = c.word();
+                int vi = 0;
+                auto r = std::from_chars(tok.data(), tok.data() + tok.size(), vi);
+                int idx = resolve(vi, (int)verts.size());
+                if (r.ec != std::errc() || idx < 0 || idx >= (int)verts.size()) {
+                    ok = false;
+                    break;
+                }
                 face.push_back(idx);
                 int t = -1;
-                size_t slashPos = tok.find('/');
-                if (slashPos != std::string::npos && slashPos + 1 < tok.size() && tok[slashPos + 1] != '/') {
-                    t = resolve(std::atoi(tok.c_str() + slashPos + 1), (int)texcoords.size());
-                    if (t < 0 || t >= (int)texcoords.size()) t = -1;
+                const char* s = r.ptr;
+                const char* e = tok.data() + tok.size();
+                if (s < e && *s == '/' && s + 1 < e && s[1] != '/') {
+                    int ti = 0;
+                    if (std::from_chars(s + 1, e, ti).ec == std::errc()) {
+                        t = resolve(ti, (int)texcoords.size());
+                        if (t < 0 || t >= (int)texcoords.size()) t = -1;
+                    }
                 }
                 fuv.push_back(t);
             }
@@ -546,18 +768,21 @@ bool importOBJ(Scene& scene, const std::string& path, std::string& err, int* fir
                 groups.back().faceUVs.push_back(std::move(fuv));
             }
         } else if (key == "o" || key == "g") {
-            std::string name = trim(line.substr(1));
-            if (name.empty()) continue;
-            if (groups.back().faces.empty()) groups.back().name = name;
-            else groups.push_back({name, {}, {}});
+            std::string name = c.rest();
+            if (!name.empty()) {
+                if (groups.back().faces.empty()) groups.back().name = name;
+                else groups.push_back({name, {}, {}});
+            }
         }
-    }
+        return true;
+    });
 
     int first = -1, added = 0;
     for (auto& g : groups) {
         if (g.faces.empty()) continue;
         Mesh mesh;
         std::unordered_map<int, int> local;
+        local.reserve(g.faces.size() * 2);
         bool allUV = true;
         for (size_t fi = 0; fi < g.faces.size(); ++fi) {
             auto& face = g.faces[fi];

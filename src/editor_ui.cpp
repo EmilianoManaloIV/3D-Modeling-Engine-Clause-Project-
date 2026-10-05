@@ -1,5 +1,7 @@
 #include "editor_internal.h"
+#include "profiler.h"
 #include "skin.h"
+#include "transform.h"
 
 #include <algorithm>
 #include <cmath>
@@ -104,11 +106,11 @@ void Editor::buildLeftPanel(const Input& in) {
         Rect row = L.row(rowH);
         if (btn("mode.object", cell(row, 0, 2, gap), "Object", mode_ == Mode::Object)) setMode(Mode::Object);
         if (btn("mode.edit", cell(row, 1, 2, gap), "Edit", mode_ == Mode::Edit)) setMode(Mode::Edit);
-        header("TRANSFORM  (G R S)");
+        header(keymap_ == Keymap::Unity ? "TOOL  (W E R)" : "TOOL  (or G R S)");
         row = L.row(rowH);
-        if (btn("xf.move", cell(row, 0, 3, gap), "Move")) beginTransform(Xform::Grab, true);
-        if (btn("xf.rotate", cell(row, 1, 3, gap), "Rotate")) beginTransform(Xform::Rotate, true);
-        if (btn("xf.scale", cell(row, 2, 3, gap), "Scale")) beginTransform(Xform::Scale, true);
+        if (btn("xf.move", cell(row, 0, 3, gap), "Move", tool_ == Tool::Move)) setTool(Tool::Move);
+        if (btn("xf.rotate", cell(row, 1, 3, gap), "Rotate", tool_ == Tool::Rotate)) setTool(Tool::Rotate);
+        if (btn("xf.scale", cell(row, 2, 3, gap), "Scale", tool_ == Tool::Scale)) setTool(Tool::Scale);
     };
 
     switch (leftTab_) {
@@ -166,6 +168,17 @@ void Editor::buildLeftPanel(const Input& in) {
             row = L.row(rowH);
             if (btn("view.wire", cell(row, 0, 2, gap), "Wireframe", wireframe_)) wireframe_ = !wireframe_;
             if (btn("view.grid", cell(row, 1, 2, gap), "Grid", showGrid_)) showGrid_ = !showGrid_;
+            header("SCENE CAMERA");
+            auto camRow = [&](const char* text, const char* key, float& v, float speed, float lo, float hi) {
+                Rect r = L.row(rowH);
+                float lw = std::floor(r.w * 0.52f);
+                ui_.textIn({r.x, r.y, lw, r.h}, text, theme::textDim, false);
+                ui_.dragFloat(uiHash(key), {r.x + lw, r.y, r.w - lw, r.h}, v, speed, theme::accent, lo, hi);
+            };
+            camRow("Field of view", "cam.fov", cam_.fovY, 0.2f, 10.0f, 120.0f);
+            camRow("Fly speed", "cam.fly", flySpeed_, 0.01f, 0.01f, 100.0f);
+            note("RMB+WASD fly; scroll");
+            note("while flying = speed.");
             break;
         }
         case 2: {  // UV
@@ -270,6 +283,11 @@ void Editor::buildLeftPanel(const Input& in) {
             row = L.row(rowH);
             if (btn("undo", cell(row, 0, 2, gap), "Undo")) undo();
             if (btn("redo", cell(row, 1, 2, gap), "Redo")) redo();
+            header("KEYMAP");
+            row = L.row(rowH);
+            if (btn("keys.unity", cell(row, 0, 2, gap), "Unity", keymap_ == Keymap::Unity)) setKeymap(Keymap::Unity);
+            if (btn("keys.blender", cell(row, 1, 2, gap), "Blender", keymap_ == Keymap::Blender))
+                setKeymap(Keymap::Blender);
             header("HELP");
             row = L.row(rowH);
             if (btn("help", cell(row, 0, 2, gap), "Keys (F1)", showHelp_)) showHelp_ = true;
@@ -304,15 +322,20 @@ void Editor::buildRightPanel(const Input& in) {
     std::vector<std::pair<int, int>> rows;  // (object index, depth)
     {
         std::vector<char> visited(count, 0);
+        std::vector<std::vector<int>> children(count);
+        std::vector<int> roots;
+        for (int j = 0; j < count; ++j) {
+            int p = scene_.parentIndex(j);
+            if (p >= 0) children[p].push_back(j);
+            else roots.push_back(j);
+        }
         std::function<void(int, int)> visit = [&](int i, int depth) {
             if (visited[i]) return;
             visited[i] = 1;
             rows.push_back({i, depth});
-            for (int j = 0; j < count; ++j)
-                if (scene_.parentIndex(j) == i) visit(j, depth + 1);
+            for (int j : children[i]) visit(j, depth + 1);
         };
-        for (int i = 0; i < count; ++i)
-            if (scene_.parentIndex(i) < 0) visit(i, 0);
+        for (int i : roots) visit(i, 0);
         for (int i = 0; i < count; ++i)
             if (!visited[i]) visit(i, 0);  // safety net for broken links
     }
@@ -340,6 +363,17 @@ void Editor::buildRightPanel(const Input& in) {
     }
     if (count == 0) ui_.textIn(list, "(empty scene)", theme::textDim, true);
     ui_.popClip();
+    if (clicked >= 0) {
+        const uint32_t cid = scene_.objects[clicked].id;
+        const bool doubleClick = cid == lastOutlinerClickId_ && clock_ - lastOutlinerClickTime_ < 0.4;
+        lastOutlinerClickId_ = cid;
+        lastOutlinerClickTime_ = doubleClick ? -1.0 : clock_;
+        if (doubleClick && mode_ == Mode::Object) {
+            selectOnly(clicked);
+            frameSelected();  // Unity: double-click in the Hierarchy frames the object
+            clicked = -1;
+        }
+    }
     if (clicked >= 0) {
         if (mode_ == Mode::Edit) {
             if (clicked != scene_.active && scene_.objects[clicked].isMesh()) {
@@ -395,12 +429,39 @@ void Editor::objectProperties(PanelLayout& L, Object& o, const Input& in) {
     label(L, strf("%s%s%s", kindName(o.kind), p >= 0 ? "  -  child of " : "", p >= 0 ? scene_.objects[p].name.c_str() : ""),
           theme::textDim);
 
-    label(L, o.parent ? "Location (in parent)" : "Location", theme::textDim);
+    label(L, o.parent ? "Position (in parent)" : "Position", theme::textDim);
     vec3Fields(L, "loc", id, o.position, 0.02f, -1e6f, 1e6f, kAxisColor);
     label(L, "Rotation (degrees)", theme::textDim);
     vec3Fields(L, "rot", id, o.rotation, 0.5f, -1e6f, 1e6f, kAxisColor);
     label(L, "Scale", theme::textDim);
     vec3Fields(L, "scl", id, o.scale, 0.01f, -1e4f, 1e4f, kAxisColor);
+    {
+        // Unity's Transform context menu: Reset / Copy / Paste (paste goes to every selected object).
+        Rect row = L.row(rowH);
+        if (ui_.button(uiHash("tf.reset"), cell(row, 0, 3, gap), "Reset")) {
+            beginEdit(uiHash("tf.reset", id));
+            for (Object& other : scene_.objects)
+                if (other.selected || &other == &o) tf::reset(other);
+            setStatus("Transform reset");
+        }
+        if (ui_.button(uiHash("tf.copy"), cell(row, 1, 3, gap), "Copy")) {
+            hasClipboard_ = true;
+            clipPosition_ = o.position;
+            clipRotation_ = o.rotation;
+            clipScale_ = o.scale;
+            setStatus("Copied transform of " + o.name);
+        }
+        if (ui_.button(uiHash("tf.paste"), cell(row, 2, 3, gap), "Paste") && hasClipboard_) {
+            beginEdit(uiHash("tf.paste", id));
+            for (Object& other : scene_.objects)
+                if (other.selected || &other == &o) {
+                    other.position = clipPosition_;
+                    other.rotation = clipRotation_;
+                    other.scale = clipScale_;
+                }
+            setStatus("Pasted transform");
+        }
+    }
 
     if (o.isMesh()) {
         // --- Parametric recipe ---
@@ -501,7 +562,7 @@ void Editor::objectProperties(PanelLayout& L, Object& o, const Input& in) {
                     Vec3 delta = edited - median;
                     for (size_t v = 0; v < sel.size(); ++v)
                         if (sel[v]) o.mesh.verts[v] += delta;
-                    o.mesh.touch();
+                    o.mesh.touchPositions();
                 }
             }
         }
@@ -590,10 +651,14 @@ void Editor::buildStatusBar() {
         msg = status_;
         c = statusError_ ? theme::error : theme::text;
     } else if (mode_ == Mode::Edit) {
-        msg = "Click/drag: select vertices | A all | G/R/S | E extrude | U unwrap | X delete | Tab: object mode";
+        msg = keymap_ == Keymap::Unity
+                  ? "Click/drag: select vertices | Ctrl+A all | W/E/R handles (Shift+drag extrudes) | Del | Tab: object mode"
+                  : "Click/drag: select vertices | A all | G/R/S | E extrude | U unwrap | X delete | Tab: object mode";
         c = theme::textDim;
     } else {
-        msg = "Click: select | RMB drag: orbit | Shift+RMB: pan | G/R/S | Ctrl+P parent | Z shading | F1 help";
+        msg = keymap_ == Keymap::Unity
+                  ? "Q W E R Y tools | Alt+LMB orbit | MMB pan | RMB+WASD fly | X local/global | Z pivot/center | F1 help"
+                  : "Click: select | RMB drag: orbit | Shift+RMB: pan | G/R/S | Ctrl+P parent | Z shading | F1 help";
         c = theme::textDim;
     }
     ui_.textIn({statusBar_.x + 2 * fs, statusBar_.y, statusBar_.w - rw - 4 * fs, statusBar_.h}, msg, c, false);
@@ -627,7 +692,8 @@ void Editor::buildViewportHeader() {
 void Editor::buildViewportOverlay() {
     const float fs = (float)fontScale_;
     ui_.pushClip(viewport_);
-    const float x = viewport_.x + 6 * fs;
+    drawGizmo();
+    const float x = toolbarRect_.x + toolbarRect_.w + 6 * fs;
     float y = headerRect_.y + headerRect_.h + 4 * fs;
     std::string info = std::string(cam_.ortho ? "Orthographic" : "Perspective") +
                        (mode_ == Mode::Edit ? "  |  Edit Mode" : "  |  Object Mode");
@@ -678,25 +744,49 @@ void Editor::buildViewportOverlay() {
         ui_.border(r, {1, 1, 1, 0.6f}, 1.0f);
     }
 
-    // Orientation gizmo: world axes rotated into view space.
-    const float cx = viewport_.x + 28 * fs, cy = viewport_.y + viewport_.h - 28 * fs, len = 18 * fs;
-    struct AxisDraw {
-        int i;
-        float x, y, z;
-    };
-    AxisDraw axes[3];
-    for (int i = 0; i < 3; ++i) axes[i] = {i, view_(0, i), -view_(1, i), view_(2, i)};
-    std::sort(axes, axes + 3, [](const AxisDraw& a, const AxisDraw& b) { return a.z < b.z; });
-    ui_.rect({cx - 2 * fs, cy - 2 * fs, 4 * fs, 4 * fs}, withAlpha(theme::text, 0.5f));
-    for (const AxisDraw& a : axes) {
-        float alpha = a.z < -0.2f ? 0.45f : 1.0f;
-        float ex = cx + a.x * len, ey = cy + a.y * len;
-        Color col = withAlpha(kAxisColor[a.i], alpha);
-        ui_.line(cx, cy, ex, ey, 1.5f * fs, col);
-        float r = 5 * fs;
-        ui_.rect({ex - r, ey - r, 2 * r, 2 * r}, col);
-        const char* nm = a.i == 0 ? "X" : a.i == 1 ? "Y" : "Z";
-        ui_.text(ex - 2.5f * fs, ey - 3.5f * fs, nm, withAlpha(theme::panelDark, alpha));
+    // Scene gizmo (top-right): six axis arms, front-most drawn last.
+    {
+        Vec2 c;
+        float len;
+        sceneGizmoLayout(c, len);
+        pickSceneGizmo({-1e6f, -1e6f});  // refresh sceneGizmoRect_
+        struct Arm {
+            int k;
+            float x, y, z;
+        };
+        Arm arms[6];
+        for (int k = 0; k < 6; ++k) {
+            int i = k / 2;
+            float sgn = (k % 2) ? -1.0f : 1.0f;
+            arms[k] = {k, view_(0, i) * sgn, -view_(1, i) * sgn, view_(2, i) * sgn};
+        }
+        std::sort(arms, arms + 6, [](const Arm& a, const Arm& b) { return a.z < b.z; });
+        auto disc = [&](Vec2 p, float r, Color col) {
+            for (int t = 0; t < 14; ++t) {
+                float a0 = 2 * kPi * t / 14, a1 = 2 * kPi * (t + 1) / 14;
+                ui_.triangle(p, p + Vec2(std::cos(a0), std::sin(a0)) * r, p + Vec2(std::cos(a1), std::sin(a1)) * r, col);
+            }
+        };
+        disc(c, len + 6 * fs, withAlpha(theme::panelDark, 0.45f));
+        const Color hot{1.0f, 0.86f, 0.18f, 1};
+        for (const Arm& a : arms) {
+            const bool positive = a.k % 2 == 0;
+            const int axis = a.k / 2;
+            Vec2 e(c.x + a.x * len, c.y + a.y * len);
+            Color col = positive ? kAxisColor[axis] : Color{0.62f, 0.64f, 0.70f, 1};
+            if (sceneGizmoHover_ == a.k) col = hot;
+            if (a.z < -0.3f) col = withAlpha(col, 0.55f);
+            ui_.line(c.x, c.y, e.x, e.y, positive ? 2.0f * fs : 1.2f * fs, col);
+            disc(e, (positive ? 6.0f : 4.5f) * fs, col);
+            if (positive) {
+                const char* nm = axis == 0 ? "X" : axis == 1 ? "Y" : "Z";
+                ui_.text(e.x - 2.5f * fs, e.y - 3.5f * fs, nm, theme::panelDark);
+            }
+        }
+        ui_.rect({c.x - 3 * fs, c.y - 3 * fs, 6 * fs, 6 * fs}, sceneGizmoHover_ == 6 ? hot : Color{0.9f, 0.9f, 0.92f, 0.9f});
+        const std::string label = cam_.ortho ? "Iso" : "Persp";
+        ui_.text(c.x - ui_.textWidth(label) * 0.5f, c.y + len + 6 * fs, label,
+                 sceneGizmoHover_ == 6 ? hot : withAlpha(theme::text, 0.85f));
     }
     ui_.popClip();
 }
@@ -744,31 +834,53 @@ void Editor::buildUvEditor() {
 }
 
 void Editor::buildHelp() {
-    static const char* const kRows[][2] = {
-        {"MOUSE", ""},
-        {"Left click / drag", "Select / box select (Shift add, Ctrl remove)"},
-        {"Right / middle drag", "Orbit (also Alt + left); Shift: pan"},
-        {"Mouse wheel", "Zoom"},
-        {"", ""},
-        {"KEYBOARD", ""},
+    static const char* const kUnity[][2] = {
+        {"UNITY KEYMAP", ""},
+        {"Q W E R Y", "Hand / Move / Rotate / Scale / All tools"},
+        {"Drag a handle", "Arrow: axis, square: plane, ring: rotate"},
+        {"  Ctrl while dragging", "Snap (0.25 / 15 deg / 0.1)"},
+        {"  Shift + drag (Edit)", "Extrude the selected faces, then move"},
+        {"X / Z", "Global-local axes / pivot-center"},
+        {"Alt+LMB  MMB  Alt+RMB", "Orbit / pan / zoom"},
+        {"RMB + W A S D Q E", "Fly (accelerates; Shift faster)"},
+        {"  wheel while flying", "Change fly speed"},
+        {"Arrow keys", "Move the camera; wheel zooms"},
+        {"Scene gizmo (top right)", "Click an axis: view along it; label: Persp/Iso"},
+        {"F / double-click list", "Frame selection (animated)"},
+        {"Click / drag", "Select / box (Shift or Ctrl adds)"},
+        {"Ctrl+D / Delete", "Duplicate / delete"},
+        {"Ctrl+A / Ctrl+E", "Select all / extrude faces"},
+        {"Shift+Z", "Cycle shading modes"},
+    };
+    static const char* const kBlender[][2] = {
+        {"BLENDER KEYMAP", ""},
         {"G / R / S", "Move / rotate / scale (X Y Z lock, Ctrl snap)"},
         {"  Left click / Enter", "Confirm     Right click / Esc: cancel"},
-        {"Tab", "Object / Edit (vertex) mode"},
+        {"Handles", "Toolbar tools work too (drag the gizmo)"},
+        {"RMB / MMB drag", "Orbit; Shift: pan; wheel: zoom"},
+        {"Click / drag", "Select / box (Shift add, Ctrl remove)"},
         {"A / E / X", "Select all / extrude faces / delete"},
         {"Shift + D", "Duplicate (keeps hierarchy and rigs)"},
+        {"Z / W", "Cycle shading / wireframe"},
+    };
+    static const char* const kCommon[][2] = {
+        {"", ""},
+        {"BOTH KEYMAPS", ""},
+        {"Tab", "Object / Edit (vertex) mode"},
         {"Ctrl+P / Alt+P", "Parent to active / clear parent"},
-        {"U", "Smart UV unwrap"},
-        {"Z", "Shading: studio / lit / UV checker / weights"},
-        {"Space", "Play / pause particles"},
-        {"F", "Frame selection"},
-        {"1 / 3 / 7  (Ctrl)", "Front / right / top view (opposite)"},
-        {"5 / W", "Perspective-ortho / wireframe + x-ray"},
+        {"U / Space / F", "Smart unwrap / particles / frame"},
+        {"1 / 3 / 7  (Ctrl)  5", "Front / right / top (opposite); ortho"},
         {"Ctrl+Z / Ctrl+Y", "Undo / redo"},
         {"Ctrl+S / Ctrl+O", "Save / load the scene named in File"},
-        {"F12", "Save a screenshot (PNG)"},
-        {"F1 or H", "This help"},
+        {"F3 / F12 / F1", "Stats / screenshot / this help"},
     };
-    const int n = (int)(sizeof kRows / sizeof kRows[0]);
+    std::vector<std::pair<const char*, const char*>> rows;
+    if (keymap_ == Keymap::Unity)
+        for (const auto& r : kUnity) rows.push_back({r[0], r[1]});
+    else
+        for (const auto& r : kBlender) rows.push_back({r[0], r[1]});
+    for (const auto& r : kCommon) rows.push_back({r[0], r[1]});
+    const int n = (int)rows.size();
     const float fs = (float)fontScale_;
     const float pad = 10 * fs, lineH = 10 * fs;
     const float keyW = 22 * 6 * fs, descW = 46 * 6 * fs;
@@ -781,9 +893,9 @@ void Editor::buildHelp() {
     ui_.text(box.x + pad, y, "MODELER 3D  -  CONTROLS", theme::accent);
     y += lineH * 1.5f;
     for (int i = 0; i < n; ++i) {
-        bool section = kRows[i][1][0] == '\0';
-        ui_.text(box.x + pad, y, kRows[i][0], section ? theme::textDim : theme::white);
-        ui_.text(box.x + pad + keyW, y, kRows[i][1], theme::text);
+        bool section = rows[i].second[0] == '\0';
+        ui_.text(box.x + pad, y, rows[i].first, section ? theme::textDim : theme::white);
+        ui_.text(box.x + pad + keyW, y, rows[i].second, theme::text);
         y += lineH;
     }
     ui_.text(box.x + pad, box.y + box.h - pad - ui_.glyphH(), "Click or press any key to close.", theme::textDim);
@@ -806,4 +918,59 @@ void Editor::buildQuitDialog() {
     }
     if (ui_.button(uiHash("quit.discard"), cell(row, 1, 3, gap), "Don't Save")) exit_ = true;
     if (ui_.button(uiHash("quit.cancel"), cell(row, 2, 3, gap), "Cancel")) confirmQuit_ = false;
+}
+
+// Unity-like tool palette on the left edge of the viewport.
+void Editor::buildViewportToolbar() {
+    const float fs = (float)fontScale_;
+    const float gap = 2 * fs, h = ui_.rowHeight();
+    const float w = ui_.textWidth("Center") + 10 * fs;
+    float x = viewport_.x + 4 * fs, y = headerRect_.y + headerRect_.h + 4 * fs;
+    const float top = y;
+    struct Entry {
+        const char* label;
+        Tool tool;
+    };
+    static const Entry tools[] = {
+        {"Hand", Tool::Hand}, {"Move", Tool::Move}, {"Rotate", Tool::Rotate}, {"Scale", Tool::Scale}, {"All", Tool::Universal}};
+    for (const Entry& e : tools) {
+        if (ui_.button(uiHash("tool", (uint32_t)e.tool), {x, y, w, h}, e.label, tool_ == e.tool)) setTool(e.tool);
+        y += h + gap;
+    }
+    y += 3 * fs;
+    if (ui_.button(uiHash("tool.space"), {x, y, w, h}, localSpace_ ? "Local" : "Global", false)) {
+        localSpace_ = !localSpace_;
+        setStatus(localSpace_ ? "Handle orientation: Local" : "Handle orientation: Global");
+    }
+    y += h + gap;
+    if (ui_.button(uiHash("tool.pivot"), {x, y, w, h}, pivotCenter_ ? "Center" : "Pivot", false)) {
+        pivotCenter_ = !pivotCenter_;
+        setStatus(pivotCenter_ ? "Handle position: Center" : "Handle position: Pivot");
+    }
+    y += h;
+    toolbarRect_ = {x, top, w, y - top};
+}
+
+// F3: rolling per-section timings from the profiler (GEA Vol. I ch. 10).
+void Editor::buildStatsOverlay() {
+    const float fs = (float)fontScale_;
+    std::vector<prof::Stat> st = prof::stats();
+    std::sort(st.begin(), st.end(), [](const prof::Stat& a, const prof::Stat& b) { return a.avgMs > b.avgMs; });
+    std::vector<std::string> lines;
+    for (const auto& x : st)
+        if (std::string(x.name) == "frame total")
+            lines.push_back(strf("Frame %6.2f ms (%4.0f fps)", x.avgMs, x.avgMs > 0 ? 1000.0 / x.avgMs : 0.0));
+    for (const auto& x : st) {
+        if (std::string(x.name) == "frame total" || x.avgMs < 0.01) continue;
+        lines.push_back(strf("%-22.22s %6.2f", x.name, x.avgMs));
+        if (lines.size() > 12) break;
+    }
+    for (const auto& c : prof::counters())
+        if (c.avg > 0) lines.push_back(strf("%-22.22s %6.0f", c.name, c.avg));
+    const float lineH = 9 * fs, w = 30 * 6 * fs + 8 * fs, h = lines.size() * lineH + 8 * fs;
+    Rect box{viewport_.x + viewport_.w - w - 6 * fs, sceneGizmoRect_.y + sceneGizmoRect_.h + 4 * fs, w, h};
+    ui_.rect(box, withAlpha(theme::panelDark, 0.88f));
+    float y = box.y + 4 * fs;
+    for (size_t i = 0; i < lines.size(); ++i, y += lineH)
+        ui_.text(box.x + 4 * fs, y, lines[i], i == 0 ? theme::white : theme::text);
 }

@@ -84,6 +84,20 @@ build CMakeFiles/Modeler3D.dir/src/editor_render.cpp.obj: CXX_COMPILER__Modeler3
   OBJECT_DIR = CMakeFiles\Modeler3D.dir
   OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
 
+build CMakeFiles/Modeler3D.dir/src/editor_gizmo.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/editor_gizmo.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\editor_gizmo.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
+build CMakeFiles/Modeler3D.dir/src/editor_bench.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/editor_bench.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\editor_bench.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
 build CMakeFiles/Modeler3D.dir/src/renderer.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/renderer.cpp || cmake_object_order_depends_target_Modeler3D
   DEP_FILE = CMakeFiles\Modeler3D.dir\src\renderer.cpp.obj.d
   FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
@@ -168,6 +182,20 @@ build CMakeFiles/Modeler3D.dir/src/particles.cpp.obj: CXX_COMPILER__Modeler3D_un
   OBJECT_DIR = CMakeFiles\Modeler3D.dir
   OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
 
+build CMakeFiles/Modeler3D.dir/src/transform.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/transform.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\transform.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
+build CMakeFiles/Modeler3D.dir/src/profiler.cpp.obj: CXX_COMPILER__Modeler3D_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/profiler.cpp || cmake_object_order_depends_target_Modeler3D
+  DEP_FILE = CMakeFiles\Modeler3D.dir\src\profiler.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17 -Wall -Wextra -Wno-cast-function-type
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\Modeler3D.dir
+  OBJECT_FILE_DIR = CMakeFiles\Modeler3D.dir\src
+
 
 # =============================================================================
 # Link build statements for EXECUTABLE target Modeler3D
@@ -176,7 +204,7 @@ build CMakeFiles/Modeler3D.dir/src/particles.cpp.obj: CXX_COMPILER__Modeler3D_un
 #############################################
 # Link the executable Modeler3D.exe
 
-build Modeler3D.exe: CXX_EXECUTABLE_LINKER__Modeler3D_Release CMakeFiles/Modeler3D.dir/src/main.cpp.obj CMakeFiles/Modeler3D.dir/src/editor.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_actions.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_ui.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_render.cpp.obj CMakeFiles/Modeler3D.dir/src/renderer.cpp.obj CMakeFiles/Modeler3D.dir/src/ui.cpp.obj CMakeFiles/Modeler3D.dir/src/font.cpp.obj CMakeFiles/Modeler3D.dir/src/gl.cpp.obj CMakeFiles/Modeler3D.dir/src/image_io.cpp.obj CMakeFiles/Modeler3D.dir/src/platform_win32.cpp.obj CMakeFiles/Modeler3D.dir/src/mesh.cpp.obj CMakeFiles/Modeler3D.dir/src/uv.cpp.obj CMakeFiles/Modeler3D.dir/src/parametric.cpp.obj CMakeFiles/Modeler3D.dir/src/scene.cpp.obj CMakeFiles/Modeler3D.dir/src/skin.cpp.obj CMakeFiles/Modeler3D.dir/src/particles.cpp.obj
+build Modeler3D.exe: CXX_EXECUTABLE_LINKER__Modeler3D_Release CMakeFiles/Modeler3D.dir/src/main.cpp.obj CMakeFiles/Modeler3D.dir/src/editor.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_actions.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_ui.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_render.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_gizmo.cpp.obj CMakeFiles/Modeler3D.dir/src/editor_bench.cpp.obj CMakeFiles/Modeler3D.dir/src/renderer.cpp.obj CMakeFiles/Modeler3D.dir/src/ui.cpp.obj CMakeFiles/Modeler3D.dir/src/font.cpp.obj CMakeFiles/Modeler3D.dir/src/gl.cpp.obj CMakeFiles/Modeler3D.dir/src/image_io.cpp.obj CMakeFiles/Modeler3D.dir/src/platform_win32.cpp.obj CMakeFiles/Modeler3D.dir/src/mesh.cpp.obj CMakeFiles/Modeler3D.dir/src/uv.cpp.obj CMakeFiles/Modeler3D.dir/src/parametric.cpp.obj CMakeFiles/Modeler3D.dir/src/scene.cpp.obj CMakeFiles/Modeler3D.dir/src/skin.cpp.obj CMakeFiles/Modeler3D.dir/src/particles.cpp.obj CMakeFiles/Modeler3D.dir/src/transform.cpp.obj CMakeFiles/Modeler3D.dir/src/profiler.cpp.obj
   FLAGS = -O3 -DNDEBUG
   LINK_FLAGS = -mwindows  -static -static-libgcc -static-libstdc++
   LINK_LIBRARIES = -lopengl32  -lgdi32  -luser32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
@@ -245,6 +273,20 @@ build CMakeFiles/modeler_tests.dir/src/particles.cpp.obj: CXX_COMPILER__modeler_
   OBJECT_DIR = CMakeFiles\modeler_tests.dir
   OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
 
+build CMakeFiles/modeler_tests.dir/src/transform.cpp.obj: CXX_COMPILER__modeler_tests_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/transform.cpp || cmake_object_order_depends_target_modeler_tests
+  DEP_FILE = CMakeFiles\modeler_tests.dir\src\transform.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\modeler_tests.dir
+  OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
+
+build CMakeFiles/modeler_tests.dir/src/profiler.cpp.obj: CXX_COMPILER__modeler_tests_unscanned_Release C$:/Users/trick/Downloads/Game$ Engine$ Project$ (Claude$ Addition)/src/profiler.cpp || cmake_object_order_depends_target_modeler_tests
+  DEP_FILE = CMakeFiles\modeler_tests.dir\src\profiler.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=c++17
+  INCLUDES = -I"C:/Users/trick/Downloads/Game Engine Project (Claude Addition)/src"
+  OBJECT_DIR = CMakeFiles\modeler_tests.dir
+  OBJECT_FILE_DIR = CMakeFiles\modeler_tests.dir\src
+
 
 # =============================================================================
 # Link build statements for EXECUTABLE target modeler_tests
@@ -253,7 +295,7 @@ build CMakeFiles/modeler_tests.dir/src/particles.cpp.obj: CXX_COMPILER__modeler_
 #############################################
 # Link the executable modeler_tests.exe
 
-build modeler_tests.exe: CXX_EXECUTABLE_LINKER__modeler_tests_Release CMakeFiles/modeler_tests.dir/tests/tests.cpp.obj CMakeFiles/modeler_tests.dir/src/mesh.cpp.obj CMakeFiles/modeler_tests.dir/src/uv.cpp.obj CMakeFiles/modeler_tests.dir/src/parametric.cpp.obj CMakeFiles/modeler_tests.dir/src/scene.cpp.obj CMakeFiles/modeler_tests.dir/src/skin.cpp.obj CMakeFiles/modeler_tests.dir/src/particles.cpp.obj
+build modeler_tests.exe: CXX_EXECUTABLE_LINKER__modeler_tests_Release CMakeFiles/modeler_tests.dir/tests/tests.cpp.obj CMakeFiles/modeler_tests.dir/src/mesh.cpp.obj CMakeFiles/modeler_tests.dir/src/uv.cpp.obj CMakeFiles/modeler_tests.dir/src/parametric.cpp.obj CMakeFiles/modeler_tests.dir/src/scene.cpp.obj CMakeFiles/modeler_tests.dir/src/skin.cpp.obj CMakeFiles/modeler_tests.dir/src/particles.cpp.obj CMakeFiles/modeler_tests.dir/src/transform.cpp.obj CMakeFiles/modeler_tests.dir/src/profiler.cpp.obj
   FLAGS = -O3 -DNDEBUG
   LINK_FLAGS = -static
   LINK_LIBRARIES = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32

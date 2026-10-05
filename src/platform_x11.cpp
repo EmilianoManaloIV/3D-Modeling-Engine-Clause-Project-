@@ -38,6 +38,8 @@ bool g_quit = false;
 int g_width = 0, g_height = 0;
 float g_dpi = 1.0f;
 bool g_contextError = false;
+SwapIntervalEXTFn g_swapEXT = nullptr;
+SwapIntervalMESAFn g_swapMESA = nullptr;
 
 int contextErrorHandler(Display*, XErrorEvent*) {
     g_contextError = true;
@@ -198,12 +200,11 @@ bool init(const char* title, int width, int height, std::string& error) {
     }
     glXMakeCurrent(g_display, g_window, g_context);
 
-    if (hasExtension(extensions, "GLX_EXT_swap_control")) {
-        if (auto f = (SwapIntervalEXTFn)glXGetProcAddressARB((const GLubyte*)"glXSwapIntervalEXT"))
-            f(g_display, g_window, 1);
-    } else if (hasExtension(extensions, "GLX_MESA_swap_control")) {
-        if (auto f = (SwapIntervalMESAFn)glXGetProcAddressARB((const GLubyte*)"glXSwapIntervalMESA")) f(1);
-    }
+    if (hasExtension(extensions, "GLX_EXT_swap_control"))
+        g_swapEXT = (SwapIntervalEXTFn)glXGetProcAddressARB((const GLubyte*)"glXSwapIntervalEXT");
+    else if (hasExtension(extensions, "GLX_MESA_swap_control"))
+        g_swapMESA = (SwapIntervalMESAFn)glXGetProcAddressARB((const GLubyte*)"glXSwapIntervalMESA");
+    setVSync(true);
 
     // Report key auto-repeat as repeated presses instead of release/press pairs.
     XkbSetDetectableAutoRepeat(g_display, True, nullptr);
@@ -278,6 +279,11 @@ void processEvents(Input& input) {
 bool quitRequested() { return g_quit; }
 void clearQuitRequest() { g_quit = false; }
 void swapBuffers() { glXSwapBuffers(g_display, g_window); }
+
+void setVSync(bool on) {
+    if (g_swapEXT) g_swapEXT(g_display, g_window, on ? 1 : 0);
+    else if (g_swapMESA) g_swapMESA(on ? 1 : 0);
+}
 
 void getFramebufferSize(int& w, int& h) {
     w = g_width;

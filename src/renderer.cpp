@@ -2,6 +2,7 @@
 
 #include "font.h"
 #include "gl.h"
+#include "profiler.h"
 
 #include <algorithm>
 #include <cmath>
@@ -181,6 +182,53 @@ void main() {
 }
 )";
 
+// Selection mask + outline composite.
+const char* kMaskVS = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+uniform mat4 uModel;
+uniform mat4 uViewProj;
+void main() { gl_Position = uViewProj * (uModel * vec4(aPos, 1.0)); }
+)";
+
+const char* kMaskFS = R"(#version 330 core
+uniform float uValue;
+out vec4 fragColor;
+void main() { fragColor = vec4(uValue, 0.0, 0.0, 1.0); }
+)";
+
+const char* kOutlineVS = R"(#version 330 core
+void main() {  // one full-screen triangle, no vertex buffer
+    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+
+const char* kOutlineFS = R"(#version 330 core
+uniform sampler2D uMask;
+uniform ivec2 uOffset;
+uniform ivec2 uSize;
+uniform float uRadius;
+uniform vec4 uActive;
+uniform vec4 uOther;
+out vec4 fragColor;
+float maskAt(ivec2 p) { return texelFetch(uMask, clamp(p, ivec2(0), uSize - 1), 0).r; }
+void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy) - uOffset;
+    if (maskAt(p) > 0.0) discard;              // outline only outside the silhouette
+    float m = 0.0;
+    for (int k = 0; k < 8; ++k) {          // 8 taps on the outline radius...
+        float a = 6.2831853 * float(k) / 8.0;
+        m = max(m, maskAt(p + ivec2(round(vec2(cos(a), sin(a)) * uRadius))));
+    }
+    for (int k = 0; k < 4; ++k) {          // ...and 4 halfway, so thin parts are caught
+        float a = 6.2831853 * (float(k) + 0.5) / 4.0;
+        m = max(m, maskAt(p + ivec2(round(vec2(cos(a), sin(a)) * uRadius * 0.5))));
+    }
+    if (m <= 0.0) discard;
+    fragColor = m > 0.75 ? uActive : uOther;
+}
+)";
+
 const char* kUiVS = R"(#version 330 core
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aUV;
@@ -288,7 +336,9 @@ bool Renderer::init(std::string& error) {
     lineProg_ = meshProg_ ? linkProgram(kLineVS, kLineFS, error) : 0;
     uiProg_ = lineProg_ ? linkProgram(kUiVS, kUiFS, error) : 0;
     particleProg_ = uiProg_ ? linkProgram(kParticleVS, kParticleFS, error) : 0;
-    if (!meshProg_ || !lineProg_ || !uiProg_ || !particleProg_) return false;
+    maskProg_ = particleProg_ ? linkProgram(kMaskVS, kMaskFS, error) : 0;
+    outlineProg_ = maskProg_ ? linkProgram(kOutlineVS, kOutlineFS, error) : 0;
+    if (!meshProg_ || !lineProg_ || !uiProg_ || !particleProg_ || !maskProg_ || !outlineProg_) return false;
 
     auto loc = [](GLuint p, const char* name) { return gl::GetUniformLocation(p, name); };
     meshU_.model = loc(meshProg_, "uModel");
@@ -329,6 +379,16 @@ bool Renderer::init(std::string& error) {
     uiU_.tex = loc(uiProg_, "uTex");
 
     particleU_.viewProj = loc(particleProg_, "uViewProj");
+    maskU_.model = loc(maskProg_, "uModel");
+    maskU_.viewProj = loc(maskProg_, "uViewProj");
+    maskU_.value = loc(maskProg_, "uValue");
+    outlineU_.mask = loc(outlineProg_, "uMask");
+    outlineU_.offset = loc(outlineProg_, "uOffset");
+    outlineU_.size = loc(outlineProg_, "uSize");
+    outlineU_.radius = loc(outlineProg_, "uRadius");
+    outlineU_.active = loc(outlineProg_, "uActive");
+    outlineU_.other = loc(outlineProg_, "uOther");
+    gl::GenVertexArrays(1, &emptyVao_);
     particleU_.pointScale = loc(particleProg_, "uPointScale");
 
     gl::GenVertexArrays(1, &lineVao_);
@@ -387,11 +447,17 @@ void Renderer::shutdown() {
     for (auto& kv : cache_) {
         GpuMesh& g = kv.second;
         gl::DeleteBuffers(1, &g.vbo);
+        gl::DeleteBuffers(1, &g.ebo);
         gl::DeleteBuffers(1, &g.edgeVbo);
         gl::DeleteVertexArrays(1, &g.vao);
         gl::DeleteVertexArrays(1, &g.edgeVao);
     }
     cache_.clear();
+    for (auto& kv : lineBatches_) {
+        gl::DeleteBuffers(1, &kv.second.vbo);
+        gl::DeleteVertexArrays(1, &kv.second.vao);
+    }
+    lineBatches_.clear();
     gl::DeleteBuffers(1, &lineVbo_);
     gl::DeleteBuffers(1, &uiVbo_);
     gl::DeleteBuffers(1, &particleVbo_);
@@ -404,6 +470,11 @@ void Renderer::shutdown() {
     gl::DeleteProgram(lineProg_);
     gl::DeleteProgram(uiProg_);
     gl::DeleteProgram(particleProg_);
+    gl::DeleteProgram(maskProg_);
+    gl::DeleteProgram(outlineProg_);
+    if (maskFbo_) gl::DeleteFramebuffers(1, &maskFbo_);
+    if (maskTex_) gl::DeleteTextures(1, &maskTex_);
+    gl::DeleteVertexArrays(1, &emptyVao_);
 }
 
 void Renderer::clearWindow(int w, int h, Color c) {
@@ -436,8 +507,10 @@ Renderer::GpuMesh& Renderer::gpuMesh(uint32_t id, uint64_t key, const Mesh& mesh
     if (!g.vao) {
         gl::GenVertexArrays(1, &g.vao);
         gl::GenBuffers(1, &g.vbo);
+        gl::GenBuffers(1, &g.ebo);
         gl::BindVertexArray(g.vao);
         gl::BindBuffer(GL_ARRAY_BUFFER, g.vbo);
+        gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ebo);  // part of the VAO state
         gl::EnableVertexAttribArray(0);
         gl::VertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), offsetPtr(offsetof(RenderVertex, pos)));
         gl::EnableVertexAttribArray(1);
@@ -448,26 +521,20 @@ Renderer::GpuMesh& Renderer::gpuMesh(uint32_t id, uint64_t key, const Mesh& mesh
         gl::EnableVertexAttribArray(3);
         gl::VertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(RenderVertex),
                                 offsetPtr(offsetof(RenderVertex, weight)));
-        gl::GenVertexArrays(1, &g.edgeVao);
-        gl::GenBuffers(1, &g.edgeVbo);
-        setupLineVao(g.edgeVao, g.edgeVbo);
     }
     if (g.key != key) {
-        buildRenderData(mesh, positions, smooth, 40.0f, weightSlot, scratch_);
+        PROF_SCOPE("mesh rebuild+upload");
+        prof::count("mesh uploads", 1);
+        buildRenderMesh(mesh, positions, smooth, 40.0f, weightSlot, scratch_, scratchIndices_);
+        gl::BindVertexArray(g.vao);
         gl::BindBuffer(GL_ARRAY_BUFFER, g.vbo);
         gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(scratch_.size() * sizeof(RenderVertex)), scratch_.data(),
                        GL_STATIC_DRAW);
-        g.triVerts = (int)scratch_.size();
-
-        scratchLines_.clear();
-        for (auto [a, b] : uniqueEdges(mesh)) {
-            scratchLines_.push_back({positions[a], theme::white});
-            scratchLines_.push_back({positions[b], theme::white});
-        }
-        gl::BindBuffer(GL_ARRAY_BUFFER, g.edgeVbo);
-        gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(scratchLines_.size() * sizeof(LineVertex)), scratchLines_.data(),
-                       GL_STATIC_DRAW);
-        g.edgeVerts = (int)scratchLines_.size();
+        gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ebo);
+        gl::BufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(scratchIndices_.size() * sizeof(uint32_t)),
+                       scratchIndices_.data(), GL_STATIC_DRAW);
+        g.triVerts = (int)scratchIndices_.size();
+        prof::count("uploaded vertices", (double)scratch_.size());
         g.key = key;
     }
     return g;
@@ -509,13 +576,40 @@ void Renderer::drawMesh(uint32_t id, uint64_t key, const Mesh& mesh, const std::
     gl::Enable(GL_POLYGON_OFFSET_FILL);
     gl::PolygonOffset(1.0f, 1.0f);
     gl::BindVertexArray(g.vao);
-    gl::DrawArrays(GL_TRIANGLES, 0, g.triVerts);
+    gl::DrawElements(GL_TRIANGLES, g.triVerts, GL_UNSIGNED_INT, nullptr);
+    prof::count("draw calls", 1);
+    prof::count("triangles drawn", g.triVerts / 3);
     gl::Disable(GL_POLYGON_OFFSET_FILL);
 }
 
 void Renderer::drawMeshEdges(uint32_t id, uint64_t key, const Mesh& mesh, const std::vector<Vec3>& positions,
                              bool smooth, int weightSlot, const Mat4& model, Color c, const FrameParams& f) {
-    GpuMesh& g = gpuMesh(id, key, mesh, positions, smooth, weightSlot);
+    GpuMesh& g = cache_[id];
+    if (!g.edgeVao) {
+        gl::GenVertexArrays(1, &g.edgeVao);
+        gl::GenBuffers(1, &g.edgeVbo);
+        setupLineVao(g.edgeVao, g.edgeVbo);
+    }
+    if (g.edgeKey != key) {
+        PROF_SCOPE("edge rebuild+upload");
+        if (g.edgeTopology != mesh.topology || mesh.topology == 0) {
+            g.edges = uniqueEdges(mesh);
+            g.edgeTopology = mesh.topology;
+        }
+        scratchLines_.clear();
+        scratchLines_.reserve(g.edges.size() * 2);
+        for (auto [a, b] : g.edges) {
+            scratchLines_.push_back({positions[a], theme::white});
+            scratchLines_.push_back({positions[b], theme::white});
+        }
+        gl::BindBuffer(GL_ARRAY_BUFFER, g.edgeVbo);
+        gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(scratchLines_.size() * sizeof(LineVertex)), scratchLines_.data(),
+                       GL_STATIC_DRAW);
+        g.edgeVerts = (int)scratchLines_.size();
+        g.edgeKey = key;
+    }
+    (void)smooth;
+    (void)weightSlot;
     if (g.edgeVerts == 0) return;
     gl::UseProgram(lineProg_);
     gl::UniformMatrix4fv(lineU_.model, 1, GL_FALSE, model.m);
@@ -528,12 +622,12 @@ void Renderer::drawMeshEdges(uint32_t id, uint64_t key, const Mesh& mesh, const 
     gl::DepthMask(GL_FALSE);
     gl::BindVertexArray(g.edgeVao);
     gl::DrawArrays(GL_LINES, 0, g.edgeVerts);
+    prof::count("draw calls", 1);
     gl::DepthMask(GL_TRUE);
 }
 
-void Renderer::drawLineList(const std::vector<LineVertex>& v, unsigned mode, const FrameParams& f, const Mat4& model,
-                            bool depthTest, float fadeRadius, Vec3 fadeCenter, float pointSize) {
-    if (v.empty()) return;
+void Renderer::drawBound(unsigned vao, int count, unsigned mode, const FrameParams& f, const Mat4& model,
+                         bool depthTest, float fadeRadius, Vec3 fadeCenter, float pointSize) {
     gl::UseProgram(lineProg_);
     gl::UniformMatrix4fv(lineU_.model, 1, GL_FALSE, model.m);
     gl::UniformMatrix4fv(lineU_.viewProj, 1, GL_FALSE, f.viewProj.m);
@@ -545,12 +639,38 @@ void Renderer::drawLineList(const std::vector<LineVertex>& v, unsigned mode, con
     if (depthTest) gl::Enable(GL_DEPTH_TEST);
     else gl::Disable(GL_DEPTH_TEST);
     gl::DepthMask(GL_FALSE);
+    gl::BindVertexArray(vao);
+    gl::DrawArrays(mode, 0, (GLsizei)count);
+    prof::count("draw calls", 1);
+    gl::DepthMask(GL_TRUE);
+    gl::Enable(GL_DEPTH_TEST);
+}
+
+void Renderer::drawLineList(const std::vector<LineVertex>& v, unsigned mode, const FrameParams& f, const Mat4& model,
+                            bool depthTest, float fadeRadius, Vec3 fadeCenter, float pointSize) {
+    if (v.empty()) return;
     gl::BindVertexArray(lineVao_);
     gl::BindBuffer(GL_ARRAY_BUFFER, lineVbo_);
     gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(v.size() * sizeof(LineVertex)), v.data(), GL_STREAM_DRAW);
-    gl::DrawArrays(mode, 0, (GLsizei)v.size());
-    gl::DepthMask(GL_TRUE);
-    gl::Enable(GL_DEPTH_TEST);
+    drawBound(lineVao_, (int)v.size(), mode, f, model, depthTest, fadeRadius, fadeCenter, pointSize);
+}
+
+void Renderer::drawLinesCached(int slot, uint64_t key, const std::vector<LineVertex>& v, const FrameParams& f,
+                               const Mat4& model, bool depthTest, bool points, float pointSize) {
+    LineBatch& b = lineBatches_[slot];
+    if (!b.vao) {
+        gl::GenVertexArrays(1, &b.vao);
+        gl::GenBuffers(1, &b.vbo);
+        setupLineVao(b.vao, b.vbo);
+    }
+    if (b.key != key) {
+        PROF_SCOPE("overlay upload");
+        gl::BindBuffer(GL_ARRAY_BUFFER, b.vbo);
+        gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(v.size() * sizeof(LineVertex)), v.data(), GL_DYNAMIC_DRAW);
+        b.count = (int)v.size();
+        b.key = key;
+    }
+    if (b.count) drawBound(b.vao, b.count, points ? GL_POINTS : GL_LINES, f, model, depthTest, 0.0f, Vec3(), pointSize);
 }
 
 void Renderer::drawLines(const std::vector<LineVertex>& v, const FrameParams& f, const Mat4& model, bool depthTest,
@@ -575,11 +695,13 @@ void Renderer::drawParticles(const std::vector<ParticleVertex>& v, const FramePa
     gl::BindBuffer(GL_ARRAY_BUFFER, particleVbo_);
     gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(v.size() * sizeof(ParticleVertex)), v.data(), GL_STREAM_DRAW);
     gl::DrawArrays(GL_POINTS, 0, (GLsizei)v.size());
+    prof::count("draw calls", 1);
     gl::BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     gl::DepthMask(GL_TRUE);
 }
 
 void Renderer::drawUI(const UI& ui, int w, int h) {
+    PROF_SCOPE("ui draw");
     const auto& verts = ui.vertices();
     if (verts.empty()) return;
     gl::Viewport(0, 0, w, h);
@@ -601,7 +723,88 @@ void Renderer::drawUI(const UI& ui, int w, int h) {
         int x1 = (int)std::ceil(cmd.clip.x + cmd.clip.w), y1 = (int)std::ceil(cmd.clip.y + cmd.clip.h);
         gl::Scissor(x0, h - y1, std::max(0, x1 - x0), std::max(0, y1 - y0));  // GL origin is bottom-left
         gl::DrawArrays(GL_TRIANGLES, cmd.first, cmd.count);
+        prof::count("draw calls", 1);
     }
+    gl::Disable(GL_SCISSOR_TEST);
+    gl::Enable(GL_DEPTH_TEST);
+}
+
+bool Renderer::isCached(uint32_t id, uint64_t key) const {
+    auto it = cache_.find(id);
+    return it != cache_.end() && it->second.key == key;
+}
+
+bool Renderer::edgesCached(uint32_t id, uint64_t key) const {
+    auto it = cache_.find(id);
+    return it != cache_.end() && it->second.edgeKey == key;
+}
+
+bool Renderer::beginOutlineMask(int w, int h) {
+    if (w <= 0 || h <= 0) return false;
+    if (!maskFbo_ || w != maskW_ || h != maskH_) {
+        if (!maskFbo_) {
+            gl::GenFramebuffers(1, &maskFbo_);
+            gl::GenTextures(1, &maskTex_);
+        }
+        gl::BindTexture(GL_TEXTURE_2D, maskTex_);
+        gl::TexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        gl::TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        gl::TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        gl::BindFramebuffer(GL_FRAMEBUFFER, maskFbo_);
+        gl::FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, maskTex_, 0);
+        maskOk_ = gl::CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        maskW_ = w;
+        maskH_ = h;
+    }
+    if (!maskOk_) {
+        gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
+        return false;
+    }
+    gl::BindFramebuffer(GL_FRAMEBUFFER, maskFbo_);
+    gl::Viewport(0, 0, w, h);
+    gl::Disable(GL_SCISSOR_TEST);
+    gl::ClearColor(0, 0, 0, 0);
+    gl::Clear(GL_COLOR_BUFFER_BIT);
+    gl::Disable(GL_DEPTH_TEST);
+    gl::Disable(GL_BLEND);
+    gl::UseProgram(maskProg_);
+    return true;
+}
+
+void Renderer::drawMeshMask(uint32_t id, uint64_t key, const Mesh& mesh, const std::vector<Vec3>& positions,
+                            bool smooth, int weightSlot, const Mat4& model, float value, const FrameParams& f) {
+    GpuMesh& g = gpuMesh(id, key, mesh, positions, smooth, weightSlot);
+    if (!g.triVerts) return;
+    gl::UseProgram(maskProg_);
+    gl::UniformMatrix4fv(maskU_.model, 1, GL_FALSE, model.m);
+    gl::UniformMatrix4fv(maskU_.viewProj, 1, GL_FALSE, f.viewProj.m);
+    gl::Uniform1f(maskU_.value, value);
+    gl::BindVertexArray(g.vao);
+    gl::DrawElements(GL_TRIANGLES, g.triVerts, GL_UNSIGNED_INT, nullptr);
+    prof::count("draw calls", 1);
+}
+
+void Renderer::endOutlineMask(int vx, int vy, int vw, int vh, int sx, int sy, int sw, int sh, Color active,
+                              Color other, float radiusPx) {
+    gl::BindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl::Viewport(vx, vy, vw, vh);
+    gl::Enable(GL_SCISSOR_TEST);
+    gl::Scissor(sx, sy, std::max(0, sw), std::max(0, sh));
+    gl::Enable(GL_BLEND);
+    gl::BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gl::Disable(GL_DEPTH_TEST);
+    gl::UseProgram(outlineProg_);
+    gl::ActiveTexture(GL_TEXTURE0);
+    gl::BindTexture(GL_TEXTURE_2D, maskTex_);
+    gl::Uniform1i(outlineU_.mask, 0);
+    gl::Uniform2i(outlineU_.offset, vx, vy);
+    gl::Uniform2i(outlineU_.size, maskW_, maskH_);
+    gl::Uniform1f(outlineU_.radius, radiusPx);
+    gl::Uniform4f(outlineU_.active, active.r, active.g, active.b, active.a);
+    gl::Uniform4f(outlineU_.other, other.r, other.g, other.b, other.a);
+    gl::BindVertexArray(emptyVao_);
+    gl::DrawArrays(GL_TRIANGLES, 0, 3);
+    prof::count("draw calls", 1);
     gl::Disable(GL_SCISSOR_TEST);
     gl::Enable(GL_DEPTH_TEST);
 }

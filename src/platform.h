@@ -101,6 +101,7 @@ void processEvents(Input& input);  // pumps the OS queue into `input`
 bool quitRequested();              // window close button / Alt+F4
 void clearQuitRequest();
 void swapBuffers();
+void setVSync(bool on);  // best effort; some drivers force their own setting
 void getFramebufferSize(int& w, int& h);
 float dpiScale();                  // 1.0 = 96 DPI
 void* getProcAddress(const char* name);

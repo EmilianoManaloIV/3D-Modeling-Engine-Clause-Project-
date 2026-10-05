@@ -23,6 +23,21 @@ struct AppOptions {
     std::string openPath;
     int demo = 0;  // 0 = default scene, 1..4 = sample scenes (for screenshots)
     bool showHelp = false;
+    std::string benchmarkReport;  // non-empty: run the performance benchmark and exit
+    std::string configPath;       // settings file (keymap); empty = don't persist
+};
+
+// Handles of the Unity-style transform gizmo.
+enum GizmoHandle {
+    GH_None = 0,
+    GH_MoveX, GH_MoveY, GH_MoveZ,     // arrows
+    GH_MoveYZ, GH_MoveXZ, GH_MoveXY,  // plane squares (normal = X, Y, Z)
+    GH_MoveFree,                      // centre square: move in the view plane
+    GH_RotX, GH_RotY, GH_RotZ,        // rings
+    GH_RotView,                       // outer ring: rotate around the view axis
+    GH_RotFree,                       // inside the rings: trackball
+    GH_ScaleX, GH_ScaleY, GH_ScaleZ,  // axis cubes
+    GH_ScaleUniform,                  // centre cube
 };
 
 // Orbit camera around a target point (FoCG 5e ch. 8).
@@ -64,7 +79,19 @@ public:
 private:
     enum class Mode { Object, Edit };
     enum class Xform { None, Grab, Rotate, Scale };
-    enum class Nav { None, Orbit, Pan };
+    enum class Nav { None, Orbit, Pan, Zoom, Fly };
+    enum class Tool { Hand, Move, Rotate, Scale, Universal };  // Unity's Q W E R Y
+    enum class Keymap { Unity, Blender };
+    // One transform step relative to the originals captured by beginTransform():
+    // scale (per axis of `basis`) about the pivot, then rotation about the
+    // pivot, then translation.
+    struct XfDelta {
+        Vec3 move;
+        Vec3 rotAxis{0, 1, 0};
+        float rotDeg = 0;
+        Vec3 scale{1, 1, 1};
+        Mat4 basis;  // columns = scale axes
+    };
     struct Snapshot {
         std::vector<Object> objects;
         int active;
@@ -89,6 +116,11 @@ private:
     void setMode(Mode m);
     void frameSelected();
     void setView(float yaw, float pitch);
+    void animateCameraTo(const Camera& goal);  // eased transition (Unity scene-camera style)
+    void updateCameraAnimation(float dt);
+    int pickSceneGizmo(Vec2 windowPos);        // 0..5 = +X -X +Y -Y +Z -Z, 6 = projection toggle, -1 none
+    void sceneGizmoLayout(Vec2& center, float& length) const;
+    void clickSceneGizmo(int part);
     void parentSelected();
     void unparentSelected();
     void bindSelected();
@@ -123,9 +155,31 @@ private:
     void markDirty();
 
     // --- transform tool (editor.cpp) ---
-    bool beginTransform(Xform type, bool pushUndoState);
-    void updateTransform(const Input& in);
+    bool beginTransform(Xform type, bool pushUndoState, bool fromGizmo = false);
+    void updateTransform(const Input& in);  // modal (keyboard) transforms
+    void applyTransform(const XfDelta& d);
     void endTransform(bool confirm);
+    float axisDrag(Vec3 pivot, Vec3 axis, Vec2 mouseDelta) const;  // world units along axis
+
+    // --- Unity-style gizmo (editor_gizmo.cpp) ---
+    void computeGizmo();
+    int pickHandle(Vec2 p);
+    bool beginGizmoDrag(int handle, const Input& in);
+    void updateGizmoDrag(const Input& in);
+    void drawGizmo();
+    Vec3 gizmoAxis(int i) const { return {gizmoAxes_(0, i), gizmoAxes_(1, i), gizmoAxes_(2, i)}; }
+    bool localBounds(const Object& o, Vec3& lo, Vec3& hi);
+    void setTool(Tool t);
+    void setKeymap(Keymap k);
+    void loadConfig();
+    void saveConfig();
+
+    // --- benchmark (editor_bench.cpp) ---
+    void benchmarkTick();
+    void benchmarkSetup(int scenario);
+    void benchmarkFrame(int scenario, int frame);
+    void benchmarkOperations();
+    void clearForBenchmark();
 
     // --- input (editor.cpp) ---
     void handleShortcuts(const Input& in);
@@ -134,13 +188,15 @@ private:
     void clickSelect(Vec2 p, bool extend);
     void boxSelect(Vec2 a, Vec2 b, bool extend, bool subtract);
     int pickVertex(Vec2 p);
-    int pickGizmo(Vec2 p);
+    int pickIcon(Vec2 p);  // lights / bones / empties / emitters
 
     // --- ui (editor_ui.cpp) ---
     void buildLeftPanel(const Input& in);
     void buildRightPanel(const Input& in);
     void buildStatusBar();
     void buildViewportHeader();
+    void buildViewportToolbar();
+    void buildStatsOverlay();
     void buildViewportOverlay();
     void buildUvEditor();
     void buildHelp();
@@ -188,7 +244,7 @@ private:
 
     // matrices & layout (recomputed every frame)
     Mat4 view_, proj_, viewProj_;
-    Rect viewport_, leftPanel_, rightPanel_, statusBar_, outlinerRect_, headerRect_, uvRect_;
+    Rect viewport_, leftPanel_, rightPanel_, statusBar_, outlinerRect_, headerRect_, uvRect_, toolbarRect_;
     int screenW_ = 0, screenH_ = 0;
     float dpi_ = 1.0f;
     int fontScale_ = 2;
@@ -206,6 +262,50 @@ private:
     std::vector<Vec3> xfPos_, xfRot_, xfScale_, xfLocal_;
     std::vector<Mat4> xfWorld_, xfParentInv_;
     std::string xfInfo_;
+    bool xfFromGizmo_ = false;
+    bool xfPerObjectPivot_ = false;
+
+    // Unity-style tools
+    Tool tool_ = Tool::Move;
+    Keymap keymap_ = Keymap::Unity;
+    bool localSpace_ = false;   // gizmo axes: global (false) or the active object's (true)
+    bool pivotCenter_ = false;  // handle position: object pivot (false) or selection centre (true)
+    int gizmoHover_ = GH_None, gizmoDrag_ = GH_None;
+    bool gizmoVisible_ = false;
+    Vec3 gizmoPivot_;
+    Mat4 gizmoAxes_;
+    float gizmoSize_ = 1.0f;
+    Vec2 gizmoMouseStart_;
+    Vec3 gizmoPlaneStart_;
+    Vec2 gizmoTangent_;
+    float gizmoRadiusPx_ = 1.0f;
+    struct BoundsCache {
+        uint64_t version = ~0ull;
+        Vec3 lo, hi;
+    };
+    std::unordered_map<uint32_t, BoundsCache> boundsCache_;
+    bool hasClipboard_ = false;
+    Vec3 clipPosition_, clipRotation_, clipScale_{1, 1, 1};
+    std::string configPath_;
+    float lastDt_ = 1.0f / 60.0f;
+    double clock_ = 0;  // seconds since start (double-click timing)
+
+    // Unity-style scene camera
+    bool camAnimating_ = false;
+    Camera camFrom_, camTo_;
+    float camAnimT_ = 0;
+    float flySpeed_ = 1.0f;   // scroll while flying to change it
+    float flyHold_ = 0;       // seconds the fly keys have been held (acceleration)
+    Rect sceneGizmoRect_;
+    int sceneGizmoHover_ = -1;
+    uint32_t lastOutlinerClickId_ = 0;
+    double lastOutlinerClickTime_ = -1;
+    bool showStats_ = false;
+
+    // benchmark
+    std::string benchReport_;
+    int benchScenario_ = -1, benchFrame_ = 0;
+    std::string benchText_;
 
     // navigation / selection state
     Nav nav_ = Nav::None;
@@ -257,6 +357,8 @@ private:
     int colorCursor_ = 1;
     std::vector<LineVertex> grid_;
     std::vector<std::pair<int, int>> editEdges_;
-    uint64_t editEdgesVersion_ = ~0ull;
+    uint64_t editEdgesVersion_ = ~0ull;  // topology stamp the edge list was built from
+    std::vector<LineVertex> editLines_, editPoints_;
+    uint64_t editOverlayKey_ = ~0ull;
     std::vector<Vec3> scratch_;
 };

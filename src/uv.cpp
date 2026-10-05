@@ -66,25 +66,33 @@ uint64_t edgeKey(int a, int b) {
 template <class Connect>
 std::vector<int> components(const Mesh& m, const std::vector<int>& faces, int* count, Connect connect) {
     UnionFind uf((int)faces.size());
-    std::unordered_map<uint64_t, std::vector<int>> edgeFaces;
+    // (edge, face) pairs sorted by edge: faces sharing an edge become adjacent
+    // runs. Much cheaper than a hash map of small vectors.
+    std::vector<std::pair<uint64_t, int>> edgeFaces;
     for (int li = 0; li < (int)faces.size(); ++li) {
         const auto& face = m.faces[faces[li]];
-        for (size_t i = 0; i < face.size(); ++i) edgeFaces[edgeKey(face[i], face[(i + 1) % face.size()])].push_back(li);
+        for (size_t i = 0; i < face.size(); ++i)
+            edgeFaces.push_back({edgeKey(face[i], face[(i + 1) % face.size()]), li});
     }
-    for (const auto& kv : edgeFaces) {
-        const auto& list = kv.second;
-        int a = int(kv.first >> 32), b = int(kv.first & 0xFFFFFFFFu);
-        for (size_t i = 0; i + 1 < list.size(); ++i)
-            for (size_t j = i + 1; j < list.size(); ++j)
-                if (connect(faces[list[i]], faces[list[j]], a, b)) uf.unite(list[i], list[j]);
+    std::sort(edgeFaces.begin(), edgeFaces.end());
+    for (size_t r = 0; r < edgeFaces.size();) {
+        size_t e = r + 1;
+        while (e < edgeFaces.size() && edgeFaces[e].first == edgeFaces[r].first) ++e;
+        const int a = int(edgeFaces[r].first >> 32), b = int(edgeFaces[r].first & 0xFFFFFFFFu);
+        for (size_t i = r; i + 1 < e; ++i)
+            for (size_t j = i + 1; j < e; ++j)
+                if (connect(faces[edgeFaces[i].second], faces[edgeFaces[j].second], a, b))
+                    uf.unite(edgeFaces[i].second, edgeFaces[j].second);
+        r = e;
     }
-    std::unordered_map<int, int> ids;
-    std::vector<int> out(faces.size());
+    std::vector<int> ids(faces.size(), -1), out(faces.size());
+    int n = 0;
     for (int li = 0; li < (int)faces.size(); ++li) {
-        auto it = ids.emplace(uf.find(li), (int)ids.size()).first;
-        out[li] = it->second;
+        int root = uf.find(li);
+        if (ids[root] < 0) ids[root] = n++;
+        out[li] = ids[root];
     }
-    if (count) *count = (int)ids.size();
+    if (count) *count = n;
     return out;
 }
 

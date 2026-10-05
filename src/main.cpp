@@ -5,12 +5,14 @@
 // each frame pumps OS events, updates, renders and swaps; tear down in reverse.
 //
 // Usage: Modeler3D [scene.m3d | model.obj]
-// Testing flags: --demo <1|2>   build a sample scene
+// Testing flags: --demo <0-4>   build a sample scene
 //                --screenshot <file.png>   render a few frames, save, exit
+//                --benchmark <report.md>   run the performance scenarios, write a report, exit
 #include "editor.h"
 #include "gl.h"
 #include "image_io.h"
 #include "platform.h"
+#include "profiler.h"
 
 #include <chrono>
 #include <cstdio>
@@ -27,7 +29,15 @@ int main(int argc, char** argv) {
         if (a == "--screenshot" && i + 1 < argc) screenshotPath = argv[++i];
         else if (a == "--demo" && i + 1 < argc) options.demo = std::atoi(argv[++i]);
         else if (a == "--help-overlay") options.showHelp = true;
+        else if (a == "--benchmark" && i + 1 < argc) options.benchmarkReport = argv[++i];
         else if (!a.empty() && a[0] != '-') options.openPath = a;
+    }
+
+    // Settings live next to the executable (argv[0]).
+    {
+        std::string exe = argc > 0 ? argv[0] : "";
+        size_t slash = exe.find_last_of("/\\");
+        options.configPath = (slash == std::string::npos ? std::string() : exe.substr(0, slash + 1)) + "Modeler3D.cfg";
     }
 
     std::string error;
@@ -52,7 +62,11 @@ int main(int argc, char** argv) {
     Input input;
     auto last = std::chrono::steady_clock::now();
     int frameCount = 0;
+    const bool benchmark = !options.benchmarkReport.empty();
+    if (benchmark) platform::setVSync(false);  // measure real frame cost, not the display rate
     while (!editor.shouldExit()) {
+        prof::beginFrame();
+        auto frameStart = std::chrono::steady_clock::now();
         platform::processEvents(input);
         if (platform::quitRequested()) {
             platform::clearQuitRequest();
@@ -69,6 +83,10 @@ int main(int argc, char** argv) {
             continue;
         }
         editor.frame(input, w, h, dt);
+        if (benchmark) {  // include the GPU's work in the measured frame
+            PROF_SCOPE("gpu finish");
+            gl::Finish();
+        }
 
         if (!screenshotPath.empty() && ++frameCount == 6) {
             std::vector<uint8_t> pixels;
@@ -78,7 +96,13 @@ int main(int argc, char** argv) {
             platform::shutdown();
             return rc;
         }
-        platform::swapBuffers();
+        {
+            PROF_SCOPE("present (swap)");
+            platform::swapBuffers();
+        }
+        prof::add("frame total", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frameStart).count());
+        prof::endFrame();
+        if (benchmark) continue;
 
         // Frame cap for systems where vsync is unavailable, so an idle editor
         // doesn't spin a CPU core at hundreds of frames per second.

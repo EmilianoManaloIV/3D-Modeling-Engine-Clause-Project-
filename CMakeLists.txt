@@ -18,7 +18,9 @@ set(CORE_SOURCES
     src/parametric.cpp
     src/scene.cpp
     src/skin.cpp
-    src/particles.cpp)
+    src/particles.cpp
+    src/transform.cpp
+    src/profiler.cpp)
 
 set(APP_SOURCES
     src/main.cpp
@@ -26,6 +28,8 @@ set(APP_SOURCES
     src/editor_actions.cpp
     src/editor_ui.cpp
     src/editor_render.cpp
+    src/editor_gizmo.cpp
+    src/editor_bench.cpp
     src/renderer.cpp
     src/ui.cpp
     src/font.cpp

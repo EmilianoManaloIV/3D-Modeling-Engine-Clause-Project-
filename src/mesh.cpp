@@ -108,13 +108,52 @@ float BoneWeights::weightOf(int b) const {
 // ---------------------------------------------------------------------------
 // Mesh basics
 // ---------------------------------------------------------------------------
-void Mesh::touch() { version = ++g_versionCounter; }
+void Mesh::touch() { topology = version = ++g_versionCounter; }
+void Mesh::touchPositions() { version = ++g_versionCounter; }
 
 size_t Mesh::triangleCount() const {
+    if (cachedTriTopology_ == topology && topology != 0) return cachedTris_;
     size_t n = 0;
     for (const auto& f : faces)
         if (f.size() >= 3) n += f.size() - 2;
+    cachedTris_ = n;
+    cachedTriTopology_ = topology;
     return n;
+}
+
+bool Mesh::bounds(Vec3& lo, Vec3& hi) const {
+    if (verts.empty()) return false;
+    if (cachedBoundsVersion_ != version || version == 0) {
+        cachedLo_ = cachedHi_ = verts[0];
+        for (const Vec3& v : verts) {
+            cachedLo_ = vmin(cachedLo_, v);
+            cachedHi_ = vmax(cachedHi_, v);
+        }
+        cachedBoundsVersion_ = version;
+    }
+    lo = cachedLo_;
+    hi = cachedHi_;
+    return true;
+}
+
+bool rayHitsBox(Vec3 o, Vec3 d, Vec3 lo, Vec3 hi, float tMax) {
+    float t0 = 0.0f, t1 = tMax;
+    for (int a = 0; a < 3; ++a) {
+        // Slightly padded so rays grazing flat (zero-thickness) boxes still hit.
+        float pad = 1e-4f * (1.0f + std::fabs(hi[a] - lo[a]));
+        float l = lo[a] - pad, h = hi[a] + pad;
+        if (std::fabs(d[a]) < 1e-12f) {
+            if (o[a] < l || o[a] > h) return false;
+            continue;
+        }
+        float inv = 1.0f / d[a];
+        float ta = (l - o[a]) * inv, tb = (h - o[a]) * inv;
+        if (ta > tb) std::swap(ta, tb);
+        t0 = std::max(t0, ta);
+        t1 = std::min(t1, tb);
+        if (t0 > t1) return false;
+    }
+    return true;
 }
 
 void Mesh::validate() {
@@ -606,13 +645,15 @@ bool extrudeSelectedFaces(Mesh& m, std::vector<char>& sel, Vec3* outNormal) {
 }
 
 std::vector<std::pair<int, int>> uniqueEdges(const Mesh& m) {
-    std::unordered_set<uint64_t> seen;
-    std::vector<std::pair<int, int>> out;
+    std::vector<uint64_t> keys;
+    keys.reserve(m.triangleCount() + m.faces.size() * 2);
     for (const auto& f : m.faces)
-        for (size_t i = 0; i < f.size(); ++i) {
-            int a = f[i], b = f[(i + 1) % f.size()];
-            if (seen.insert(edgeKey(a, b)).second) out.push_back({a, b});
-        }
+        for (size_t i = 0; i < f.size(); ++i) keys.push_back(edgeKey(f[i], f[(i + 1) % f.size()]));
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    std::vector<std::pair<int, int>> out;
+    out.reserve(keys.size());
+    for (uint64_t k : keys) out.push_back({int(k >> 32), int(k & 0xFFFFFFFFu)});
     return out;
 }
 
@@ -636,10 +677,12 @@ bool raycastMesh(const Mesh& m, const std::vector<Vec3>& p, Vec3 o, Vec3 d, floa
 
 bool raycastMesh(const Mesh& m, Vec3 o, Vec3 d, float& tHit) { return raycastMesh(m, m.verts, o, d, tHit); }
 
-void buildRenderData(const Mesh& m, const std::vector<Vec3>& p, bool smooth, float smoothAngleDeg, int weightSlot,
-                     std::vector<RenderVertex>& out) {
-    out.clear();
-    out.reserve(m.triangleCount() * 3);
+void buildRenderMesh(const Mesh& m, const std::vector<Vec3>& p, bool smooth, float smoothAngleDeg, int weightSlot,
+                     std::vector<RenderVertex>& outV, std::vector<uint32_t>& outI) {
+    outV.clear();
+    outI.clear();
+    outI.reserve(m.triangleCount() * 3);
+    outV.reserve(smooth ? p.size() + p.size() / 4 : m.triangleCount() + m.faces.size() * 2);
     const size_t F = m.faces.size();
     const bool uvs = m.hasUVs(), weights = weightSlot >= 0 && m.hasWeights();
     std::vector<Vec3> rawN(F), unitN(F);
@@ -648,42 +691,101 @@ void buildRenderData(const Mesh& m, const std::vector<Vec3>& p, bool smooth, flo
         rawN[f] = faceNormalRaw(p, m.faces[f]);
         unitN[f] = normalize(rawN[f]);
     }
-
-    std::vector<std::vector<int>> vertFaces;
-    if (smooth) {
-        vertFaces.resize(p.size());
-        for (size_t f = 0; f < F; ++f)
-            for (int v : m.faces[f]) vertFaces[v].push_back((int)f);
-    }
     const float cosLimit = std::cos(toRadians(smoothAngleDeg));
 
-    std::vector<Vec3> cornerN;
+    // Fast path: if every face around a vertex is within half the smoothing
+    // angle of the vertex's average normal, all pairs are within the full
+    // angle, so every corner there gets the same (vertex) normal - no
+    // per-corner neighbour loop needed. True for most of a smooth surface.
+    std::vector<Vec3> vertexN;
+    std::vector<char> simple;
+    bool anyComplex = false;
+    if (smooth) {
+        vertexN.assign(p.size(), Vec3());
+        simple.assign(p.size(), 1);
+        for (size_t f = 0; f < F; ++f)
+            for (int v : m.faces[f]) vertexN[v] += rawN[f];
+        for (Vec3& n : vertexN) n = normalize(n);
+        const float cosHalf = std::cos(toRadians(smoothAngleDeg) * 0.5f);
+        for (size_t f = 0; f < F; ++f)
+            for (int v : m.faces[f])
+                if (dot(unitN[f], vertexN[v]) < cosHalf || dot(vertexN[v], vertexN[v]) < 0.5f) {
+                    simple[v] = 0;
+                    anyComplex = true;
+                }
+    }
+
+    // Vertex -> faces adjacency in compressed-row form (one allocation instead
+    // of one small vector per vertex); only needed for the non-simple vertices.
+    std::vector<int> adjStart, adjFaces;
+    if (smooth && anyComplex) {
+        adjStart.assign(p.size() + 1, 0);
+        for (const auto& face : m.faces)
+            for (int v : face) adjStart[v + 1]++;
+        for (size_t v = 0; v < p.size(); ++v) adjStart[v + 1] += adjStart[v];
+        adjFaces.resize(adjStart.back());
+        std::vector<int> fill(adjStart.begin(), adjStart.end() - 1);
+        for (size_t f = 0; f < F; ++f)
+            for (int v : m.faces[f]) adjFaces[fill[v]++] = (int)f;
+    }
+
+    // Indexed output: a smooth ("simple") vertex becomes one GPU vertex shared
+    // by all its faces, unless a UV seam gives a corner a different UV. Other
+    // corners are emitted once per face (and shared by that face's triangles).
+    std::vector<int> shared(smooth ? p.size() : 0, -1);
+    std::vector<uint32_t> corner;
     for (size_t f = 0; f < F; ++f) {
         const auto& face = m.faces[f];
         const size_t n = face.size();
         if (n < 3) continue;
-        cornerN.assign(n, unitN[f]);
-        if (smooth) {
-            for (size_t i = 0; i < n; ++i) {
-                Vec3 sum;
-                for (int g : vertFaces[face[i]])
-                    if (dot(unitN[g], unitN[f]) >= cosLimit) sum += rawN[g];  // area weighted
-                Vec3 nn = normalize(sum);
-                if (dot(nn, nn) > 0.5f) cornerN[i] = nn;
+        corner.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            const int v = face[i];
+            const Vec2 uv = uvs ? m.uvs[f][i] : Vec2();
+            if (smooth && simple[v]) {
+                int s = shared[v];
+                if (s >= 0 && outV[s].uv.x == uv.x && outV[s].uv.y == uv.y) {
+                    corner[i] = (uint32_t)s;
+                    continue;
+                }
             }
-        }
-        auto corner = [&](size_t i) {
+            Vec3 normal = unitN[f];
+            if (smooth) {
+                if (simple[v]) {
+                    normal = vertexN[v];
+                } else {
+                    Vec3 sum;
+                    for (int k = adjStart[v]; k < adjStart[v + 1]; ++k) {
+                        int g = adjFaces[k];
+                        if (dot(unitN[g], unitN[f]) >= cosLimit) sum += rawN[g];  // area weighted
+                    }
+                    Vec3 nn = normalize(sum);
+                    if (dot(nn, nn) > 0.5f) normal = nn;
+                }
+            }
             RenderVertex rv;
-            rv.pos = p[face[i]];
-            rv.normal = cornerN[i];
-            rv.uv = uvs ? m.uvs[f][i] : Vec2();
-            rv.weight = weights ? m.weights[face[i]].weightOf(weightSlot) : 0.0f;
-            return rv;
-        };
+            rv.pos = p[v];
+            rv.normal = normal;
+            rv.uv = uv;
+            rv.weight = weights ? m.weights[v].weightOf(weightSlot) : 0.0f;
+            corner[i] = (uint32_t)outV.size();
+            if (smooth && simple[v] && shared[v] < 0) shared[v] = (int)outV.size();
+            outV.push_back(rv);
+        }
         for (size_t i = 1; i + 1 < n; ++i) {
-            out.push_back(corner(0));
-            out.push_back(corner(i));
-            out.push_back(corner(i + 1));
+            outI.push_back(corner[0]);
+            outI.push_back(corner[i]);
+            outI.push_back(corner[i + 1]);
         }
     }
+}
+
+void buildRenderData(const Mesh& m, const std::vector<Vec3>& p, bool smooth, float smoothAngleDeg, int weightSlot,
+                     std::vector<RenderVertex>& out) {
+    std::vector<RenderVertex> verts;
+    std::vector<uint32_t> indices;
+    buildRenderMesh(m, p, smooth, smoothAngleDeg, weightSlot, verts, indices);
+    out.clear();
+    out.reserve(indices.size());
+    for (uint32_t i : indices) out.push_back(verts[i]);
 }
