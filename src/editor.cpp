@@ -83,8 +83,10 @@ bool Editor::init(const AppOptions& options, std::string& error) {
     showHelp_ = options.showHelp;
     if (!options.renderOut.empty()) {
         renderOut_ = options.renderOut;
-        if (options.renderDevice == "cpu") renderSet_.gpu = false;
-        else if (options.renderDevice == "gpu") renderSet_.gpu = gpuTracerOk_;
+        if (options.renderDevice == "cpu") renderSet_.device = DEV_CPU;
+        else if (options.renderDevice == "gpu") renderSet_.device = gpuTracerOk_ ? DEV_GPU : DEV_CPU;
+        else if (options.renderDevice == "rtx") renderSet_.device = DEV_RTX;
+        if (options.allowWarp) renderSet_.allowWarp = true;
         if (options.renderSamples > 0) renderSet_.samples = (float)options.renderSamples;
         if (options.renderPercent > 0) renderSet_.resolution = (float)options.renderPercent;
         renderView_ = true;  // started on the first frame, once the viewport size is known
@@ -110,6 +112,7 @@ void Editor::frame(const Input& in, int width, int height, float dt) {
     if (dt > 0) fps_ = fps_ * 0.95f + (1.0f / dt) * 0.05f;
     statusTime_ += dt;
     swallowKeys_ = false;
+    if (!in.droppedFiles.empty()) handleDroppedFiles(in.droppedFiles);
     if (configDirty_ && !ui_.isActive()) {
         configDirty_ = false;
         saveConfig();
@@ -587,7 +590,7 @@ void Editor::setTool(Tool t) {
 }
 
 void Editor::handleShortcuts(const Input& in) {
-    if (xf_ != Xform::None || captureAction_ >= 0 || swallowKeys_) return;
+    if (xf_ != Xform::None || insetModal_ || captureAction_ >= 0 || swallowKeys_) return;
     if (keys_.pressed(input::Action::Render, in)) {  // also works while the render view is up
         toggleRenderView();
         return;
@@ -597,6 +600,12 @@ void Editor::handleShortcuts(const Input& in) {
     // so the tool shortcuts that share those keys pause during flight.
     if (nav_ == Nav::Fly) return;
     auto hit = [&](Action a) { return keys_.pressed(a, in); };
+    if (mode_ == Mode::Edit) {  // Edit-mode keys take precedence (1 2 3 = select modes)
+        if (hit(Action::SelectVertices)) return setSelMode(SelMode::Vertex);
+        if (hit(Action::SelectEdges)) return setSelMode(SelMode::Edge);
+        if (hit(Action::SelectFaces)) return setSelMode(SelMode::Face);
+        if (hit(Action::Inset)) return insetSelected(true);
+    }
     if (hit(Action::Help)) showHelp_ = true;
     if (hit(Action::Stats)) showStats_ = !showStats_;
     if (hit(Action::Screenshot)) screenshotPending_ = true;
@@ -643,6 +652,8 @@ void Editor::handleShortcuts(const Input& in) {
         setStatus(std::string("Shading: ") + names[shading_]);
     }
     if (hit(Action::ToggleWireframe)) wireframe_ = !wireframe_;
+    if (hit(Action::LookThroughCamera)) lookThroughCamera();
+    if (hit(Action::AlignCameraToView)) alignActiveCameraToView();
     if (xf_ == Xform::None && hit(Action::ModalGrab)) beginTransform(Xform::Grab, true);
     if (xf_ == Xform::None && hit(Action::ModalRotate)) beginTransform(Xform::Rotate, true);
     if (xf_ == Xform::None && hit(Action::ModalScale)) beginTransform(Xform::Scale, true);
@@ -693,6 +704,9 @@ void Editor::handleViewport(const Input& in) {
         camAnimating_ = false;
         cam_.distance = clampf(cam_.distance * std::pow(0.85f, in.wheel * camSet_.zoomSpeed), 0.05f, 5000.0f);
     }
+
+    // --- interactive inset owns the mouse ---
+    if (updateInsetModal(in)) return;
 
     // --- an active transform owns the mouse ---
     if (xf_ != Xform::None) {
@@ -884,17 +898,19 @@ int Editor::pickIcon(Vec2 p) {
 
 void Editor::clickSelect(Vec2 p, bool extend) {
     if (mode_ == Mode::Edit) {
-        auto& sel = vertSel();
-        int v = pickVertex(p);
-        if (!extend) std::fill(sel.begin(), sel.end(), 0);
-        if (v >= 0) sel[v] = extend ? !sel[v] : 1;
+        clickSelectEdit(p, extend);
         return;
     }
     int hit = pickIcon(p);
     if (hit < 0) {
         Vec3 o, d;
         viewRay(p, o, d);
-        hit = pickObject(scene_, o, d);
+        // Dense meshes go through their cached BVH; small ones are faster brute force.
+        hit = pickObject(scene_, o, d, nullptr, [this](int i, Vec3 lo, Vec3 ld, float& t) {
+            const Object& obj = scene_.objects[i];
+            if (obj.mesh.triangleCount() < 512) return raycastMesh(obj.mesh, lo, ld, t);
+            return meshAccel(obj).raycast(lo, ld, t);
+        });
     }
     if (!extend) selectOnly(hit);
     else if (hit >= 0) toggleSelect(hit);
@@ -925,7 +941,7 @@ int Editor::pickVertex(Vec2 p) {
         float tolerance = (0.002f * cam_.distance + 1e-4f) / std::max(1e-6f, length(dir));
         float t;
         bool hidden =
-            raycastMesh(o->mesh, transformPoint(inv, origin), transformDir(inv, dir), t) && t < 1.0f - tolerance;
+            meshAccel(*o).raycast(transformPoint(inv, origin), transformDir(inv, dir), t) && t < 1.0f - tolerance;
         if (!hidden) return candidates[c].second;
     }
     return -1;
@@ -938,13 +954,7 @@ void Editor::boxSelect(Vec2 a, Vec2 b, bool extend, bool subtract) {
         return worldToScreen(world, s) && s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1;
     };
     if (mode_ == Mode::Edit) {
-        Object* o = activeMesh();
-        if (!o) return;
-        auto& sel = vertSel();
-        if (!extend && !subtract) std::fill(sel.begin(), sel.end(), 0);
-        Mat4 m = scene_.world(scene_.active);
-        for (size_t v = 0; v < sel.size(); ++v)
-            if (inside(transformPoint(m, o->mesh.verts[v]))) sel[v] = subtract ? 0 : 1;
+        boxSelectEdit(a, b, extend, subtract);
         return;
     }
     if (!extend && !subtract) selectOnly(-1);

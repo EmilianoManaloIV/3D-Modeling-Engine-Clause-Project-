@@ -18,6 +18,7 @@ Color kindColor(ObjectKind k) {
         case ObjectKind::Light: return kLightGizmo;
         case ObjectKind::Empty: return {0.9f, 0.9f, 0.9f, 1};
         case ObjectKind::Bone: return kBoneColor;
+        case ObjectKind::Camera: return {0.55f, 0.85f, 1.0f, 1};
         default: return kEmitterGizmo;
     }
 }
@@ -165,6 +166,9 @@ void Editor::buildLeftPanel(const Input& in) {
             if (btn("add.point", cell(row, 0, 3, gap), "Point")) addLight(LightType::Point);
             if (btn("add.sun", cell(row, 1, 3, gap), "Sun")) addLight(LightType::Sun);
             if (btn("add.spot", cell(row, 2, 3, gap), "Spot")) addLight(LightType::Spot);
+            row = L.row(rowH);
+            if (btn("add.area", cell(row, 0, 2, gap), "Area")) addLight(LightType::Area);
+            if (btn("add.camera", cell(row, 1, 2, gap), "Camera")) addCamera();
             header("OTHER");
             row = L.row(rowH);
             if (btn("add.empty", cell(row, 0, 2, gap), "Empty")) addEmpty();
@@ -181,10 +185,50 @@ void Editor::buildLeftPanel(const Input& in) {
         }
         case 1: {  // Mesh
             modeAndTransform();
+            Rect row;
+            if (mode_ == Mode::Edit) {
+                header("SELECT  (1 2 3)");
+                row = L.row(rowH);
+                if (btn("sel.vert", cell(row, 0, 3, gap), "Vertex", selMode_ == SelMode::Vertex)) setSelMode(SelMode::Vertex);
+                if (btn("sel.edge", cell(row, 1, 3, gap), "Edge", selMode_ == SelMode::Edge)) setSelMode(SelMode::Edge);
+                if (btn("sel.face", cell(row, 2, 3, gap), "Face", selMode_ == SelMode::Face)) setSelMode(SelMode::Face);
+            }
             header(mode_ == Mode::Edit ? "MESH (EDIT)" : "MESH");
-            Rect row = L.row(rowH);
+            row = L.row(rowH);
             if (btn("mesh.all", cell(row, 0, 2, gap), "All/None")) selectAll();
             if (btn("mesh.extrude", cell(row, 1, 2, gap), "Extrude")) extrude();
+            if (mode_ == Mode::Edit) {
+                row = L.row(rowH);
+                if (btn("mesh.inset", cell(row, 0, 2, gap), "Inset (I)")) insetSelected(false);
+                if (btn("mesh.insetind", cell(row, 1, 2, gap), "Per face", insetDefaults_.individual))
+                    insetDefaults_.individual = !insetDefaults_.individual;
+                if (lastOpAdjustable()) {
+                    header("LAST OP: INSET");
+                    meshedit::InsetParams& ip = lastOp_.inset;
+                    bool changed = false;
+                    auto opRow = [&](const char* text, const char* key, float& v, float speed, float lo, float hi) {
+                        Rect r = L.row(rowH);
+                        float lw = std::floor(r.w * 0.45f);
+                        ui_.textIn({r.x, r.y, lw, r.h}, text, theme::textDim, false);
+                        if (ui_.dragFloat(uiHash(key), {r.x + lw, r.y, r.w - lw, r.h}, v, speed, theme::accent, lo, hi))
+                            changed = true;
+                    };
+                    opRow("Width", "op.thick", ip.thickness, 0.002f, 0.0f, 1000.0f);
+                    opRow("Depth", "op.depth", ip.depth, 0.002f, -1000.0f, 1000.0f);
+                    opRow("Dish", "op.dish", ip.dish, 0.002f, -1000.0f, 1000.0f);
+                    row = L.row(rowH);
+                    if (btn("op.ind", row, "Individual faces", ip.individual)) {
+                        ip.individual = !ip.individual;
+                        changed = true;
+                    }
+                    note("Depth < 0 recesses.");
+                    note("Dish < 0 = concave.");
+                    if (changed) {
+                        insetDefaults_ = ip;
+                        applyLastOp();
+                    }
+                }
+            }
             row = L.row(rowH);
             if (btn("mesh.del", cell(row, 0, 2, gap), "Delete")) deleteSelected();
             if (btn("mesh.dup", cell(row, 1, 2, gap), "Duplicate")) duplicateSelected();
@@ -325,11 +369,18 @@ void Editor::buildLeftPanel(const Input& in) {
         case 5: {  // Render
             header("PATH TRACER  (F5)");
             Rect row = L.row(rowH);
-            if (btn("rt.gpu", cell(row, 0, 2, gap), "GPU", renderSet_.gpu && gpuTracerOk_)) {
-                if (gpuTracerOk_) renderSet_.gpu = true;
+            if (btn("rt.gpu", cell(row, 0, 3, gap), "GPU", renderSet_.device == DEV_GPU)) {
+                if (gpuTracerOk_) renderSet_.device = DEV_GPU;
                 else setStatus("GPU tracer unavailable: " + gpuTracerError_, true);
             }
-            if (btn("rt.cpu", cell(row, 1, 2, gap), "CPU", !renderSet_.gpu || !gpuTracerOk_)) renderSet_.gpu = false;
+            if (btn("rt.cpu", cell(row, 1, 3, gap), "CPU", renderSet_.device == DEV_CPU)) renderSet_.device = DEV_CPU;
+            if (btn("rt.rtx", cell(row, 2, 3, gap), "RTX", renderSet_.device == DEV_RTX)) {
+                renderSet_.device = DEV_RTX;
+                if (!hwrtInfo_.available && !renderSet_.allowWarp)
+                    setStatus("No ray-tracing GPU (DXR 1.1) found. Enable 'Software DXR' to test the RTX path on WARP.", true);
+            }
+            label(L, hwrtInfo_.available ? "RTX: " + hwrtInfo_.adapter : std::string("RTX: no DXR 1.1 GPU"),
+                  hwrtInfo_.available && !hwrtInfo_.software ? theme::accent : theme::textDim);
             row = L.row(rowH);
             if (btn("rt.render", cell(row, 0, 2, gap), renderView_ ? "Close" : "Render", renderView_)) toggleRenderView();
             if (btn("rt.save", cell(row, 1, 2, gap), "Save PNG")) {
@@ -341,8 +392,8 @@ void Editor::buildLeftPanel(const Input& in) {
             }
             if (renderView_) {
                 const int spp = renderSamples();
-                const double secs = renderGpu_ ? gpuTracer_.elapsedSeconds() : cpuRender_.elapsedSeconds();
-                const double rate = renderGpu_ ? gpuTracer_.samplesPerSecond() : cpuRender_.samplesPerSecond();
+                const double secs = renderSeconds();
+                const double rate = renderRate();
                 Rect bar = L.row(rowH * 0.6f);
                 ui_.rect(bar, theme::field);
                 float k = clampf((float)spp / std::max(1.0f, renderSet_.samples), 0.0f, 1.0f);
@@ -353,6 +404,21 @@ void Editor::buildLeftPanel(const Input& in) {
                 if (rtScene_)
                     label(L, strf("%d tris, BVH %.0f ms", (int)rtScene_->triangleCount(), rtScene_->buildMs),
                           theme::textDim);
+            }
+            row = L.row(rowH);
+            const bool hasCam = scene_.renderCameraIndex() >= 0;
+            if (btn("rt.fromcam", cell(row, 0, 2, gap), "Camera", renderSet_.useCamera && hasCam)) {
+                if (hasCam) renderSet_.useCamera = true;
+                else setStatus("No camera object yet: Create > Camera adds one at the current view", true);
+            }
+            if (btn("rt.fromview", cell(row, 1, 2, gap), "Viewport", !renderSet_.useCamera || !hasCam))
+                renderSet_.useCamera = false;
+            if (renderSet_.useCamera && hasCam) {
+                const Object& c = scene_.objects[scene_.renderCameraIndex()];
+                label(L, strf("%s: f/%.1g %.0fmm", c.name.c_str(), c.camera.fStop, c.camera.focalLength), theme::textDim);
+                label(L, strf("ISO %.0f 1/%.0fs x%.2f", c.camera.iso, 1.0f / std::max(1e-6f, c.camera.shutter),
+                              c.camera.exposure()),
+                      theme::textDim);
             }
             header("SAMPLING");
             auto setRow = [&](const char* text, const char* key, float& v, float speed, float lo, float hi,
@@ -388,6 +454,12 @@ void Editor::buildLeftPanel(const Input& in) {
             setRow("Threads", "rt.threads", renderSet_.cpuThreads, 0.05f, 0.0f, 256.0f, true);
             note(renderSet_.cpuThreads < 1 ? strf("(0 = all %d threads)", jobs::hardwareThreads()).c_str()
                                            : strf("of %d hw threads", jobs::hardwareThreads()).c_str());
+            row = L.row(rowH);
+            if (btn("rt.warp", row, "Software DXR", renderSet_.allowWarp)) {
+                renderSet_.allowWarp = !renderSet_.allowWarp;
+                hwrtInfo_ = HwRayTracer::probe(renderSet_.allowWarp);
+            }
+            for (const std::string& ad : hwrtInfo_.adapters) label(L, ad, theme::textDim);
             for (const std::string& line : gpuReport()) label(L, line, softwareGl_ ? theme::error : theme::textDim);
             note("F3 = live GPU/CPU stats.");
             break;
@@ -431,7 +503,7 @@ void Editor::buildLeftPanel(const Input& in) {
                 ui_.textIn({fr.x, fr.y, lw, fr.h}, "Find", theme::textDim, false);
                 ui_.textField(uiHash("keys.filter"), {fr.x + lw, fr.y, fr.w - lw, fr.h}, keysFilter_);
             }
-            const char* const kContextNames[3] = {"SHORTCUTS", "FLY (RMB HELD)", "TRANSFORM (MODAL)"};
+            const char* const kContextNames[4] = {"SHORTCUTS", "FLY (RMB HELD)", "TRANSFORM (MODAL)", "EDIT MODE"};
             int lastContext = -1;
             std::string filter = keysFilter_;
             for (char& ch : filter) ch = (char)std::tolower((unsigned char)ch);
@@ -565,6 +637,19 @@ void Editor::buildRightPanel(const Input& in) {
     outlinerScroll_ = clampf(outlinerScroll_, 0.0f, std::max(0.0f, count * rowH - list.h));
     ui_.pushClip(list);
     int clicked = -1;
+    // Drag & drop: where would a drop land?
+    const bool mouseInList = list.contains(in.mouseX, in.mouseY);
+    int dropRow = -1, dropZone = DropNone;
+    if (dragActive_ && mouseInList) {
+        int k = (int)std::floor((in.mouseY - list.y + outlinerScroll_) / rowH);
+        if (k >= 0 && k < (int)rows.size()) {
+            float fy = (in.mouseY - (list.y + k * rowH - outlinerScroll_)) / rowH;
+            dropRow = k;
+            dropZone = fy < 0.25f ? DropBefore : fy > 0.75f ? DropAfter : DropOnto;
+        } else {
+            dropZone = DropRoot;
+        }
+    }
     for (int k = 0; k < (int)rows.size(); ++k) {
         const int i = rows[k].first;
         Rect r{list.x, list.y + k * rowH - outlinerScroll_, list.w, rowH};
@@ -578,9 +663,64 @@ void Editor::buildRightPanel(const Input& in) {
         ui_.rect({r.x + indent + 1.5f * fs, r.y + r.h * 0.5f - 2 * fs, 4 * fs, 4 * fs}, kindColor(o.kind));
         ui_.textIn(textRect, o.name, (o.selected || i == scene_.active) ? theme::white : theme::text, false);
         if (pressed) clicked = i;
+        if (k == dropRow) {
+            if (dropZone == DropOnto) ui_.border(r, theme::selection, (float)fs);
+            else ui_.rect({r.x, dropZone == DropBefore ? r.y : r.y + r.h - fs, r.w, 2.0f * fs}, theme::selection);
+        }
+    }
+    if (dropZone == DropRoot && !rows.empty()) {
+        float y = std::min(list.y + list.h - 2 * fs, list.y + rows.size() * rowH - outlinerScroll_);
+        ui_.rect({list.x, y, list.w, 2.0f * fs}, theme::selection);
     }
     if (count == 0) ui_.textIn(list, "(empty scene)", theme::textDim, true);
     ui_.popClip();
+
+    // Start a drag after the pressed row moved a few pixels; drop on release.
+    if (dragRowId_ && in.mouseDown[MOUSE_LEFT] && !dragActive_ &&
+        length(Vec2(in.mouseX, in.mouseY) - dragPress_) > 6.0f * dpi_)
+        dragActive_ = true;
+    if (dragActive_) {
+        int di = scene_.indexOf(dragRowId_);
+        const bool many = di >= 0 && scene_.objects[di].selected && scene_.selectedCount() > 1;
+        std::string label = many ? strf("%d objects", scene_.selectedCount()) : di >= 0 ? scene_.objects[di].name : "";
+        ui_.rect({in.mouseX + 10 * fs, in.mouseY + 4 * fs, ui_.textWidth(label) + 8 * fs, rowH}, withAlpha(theme::panelDark, 0.9f));
+        ui_.text(in.mouseX + 14 * fs, in.mouseY + 4 * fs + (rowH - ui_.glyphH()) * 0.5f, label, theme::white);
+    }
+    if (dragRowId_ && !in.mouseDown[MOUSE_LEFT]) {
+        if (dragActive_) {
+            int di = scene_.indexOf(dragRowId_);
+            std::vector<uint32_t> ids;
+            if (di >= 0 && scene_.objects[di].selected) {
+                for (const Object& o : scene_.objects)
+                    if (o.selected) ids.push_back(o.id);
+            } else if (di >= 0) {
+                ids.push_back(dragRowId_);
+            }
+            if (!ids.empty() && dropZone != DropNone) {
+                uint32_t target = dropRow >= 0 ? scene_.objects[rows[dropRow].first].id : 0;
+                pushUndo();
+                if (moveInHierarchy(ids, target, dropZone)) {
+                    markDirty();
+                    static const char* what[] = {"", "Moved before", "Parented to", "Moved after", "Unparented"};
+                    setStatus(dropZone == DropRoot ? strf("Unparented %d object(s)", (int)ids.size())
+                                                   : strf("%s %s", what[dropZone], scene_.objects[scene_.indexOf(target)].name.c_str()));
+                } else {
+                    undo_.pop_back();
+                    setStatus("Can't parent an object to itself or to one of its children", true);
+                }
+            }
+        } else if (dragDeferSelect_) {
+            int di = scene_.indexOf(dragRowId_);
+            if (di >= 0) selectOnly(di);
+        }
+        dragRowId_ = 0;
+        dragActive_ = dragDeferSelect_ = false;
+    }
+    if (clicked >= 0 && mode_ == Mode::Object) {
+        dragRowId_ = scene_.objects[clicked].id;
+        dragPress_ = {in.mouseX, in.mouseY};
+        dragActive_ = dragDeferSelect_ = false;
+    }
     if (clicked >= 0) {
         const uint32_t cid = scene_.objects[clicked].id;
         const bool doubleClick = cid == lastOutlinerClickId_ && clock_ - lastOutlinerClickTime_ < 0.4 &&
@@ -600,6 +740,12 @@ void Editor::buildRightPanel(const Input& in) {
                 vsel_.assign(scene_.objects[clicked].mesh.verts.size(), 0);
                 if (makeEditable(scene_.objects[clicked])) markDirty();
             }
+        } else if (!in.ctrl() && !in.shift() && scene_.objects[clicked].selected && scene_.selectedCount() > 1) {
+            // A plain press on one of several selected rows may start a drag of
+            // all of them: only select it alone if the mouse is released in place.
+            dragDeferSelect_ = true;
+            scene_.active = clicked;
+            outlinerAnchorId_ = scene_.objects[clicked].id;
         } else if (in.shift()) {
             // Shift+click: select the range of rows from the anchor (the last
             // plain / Ctrl click) to here; Ctrl+Shift adds the range.
@@ -745,10 +891,98 @@ void Editor::objectProperties(PanelLayout& L, Object& o, const Input& in) {
                 }
             }
         }
+        floatRow(L, "Metallic", "mat.metal", id, o.metallic, 0.005f, 0.0f, 1.0f);
+        floatRow(L, "Roughness", "mat.rough", id, o.roughness, 0.005f, 0.0f, 1.0f);
+        floatRow(L, "Opacity", "mat.opac", id, o.opacity, 0.005f, 0.0f, 1.0f);
+        floatRow(L, "Transmit", "mat.trans", id, o.transmission, 0.005f, 0.0f, 1.0f);
+        floatRow(L, "IOR", "mat.ior", id, o.ior, 0.002f, 1.0f, 3.0f);
+        {
+            Rect row = L.row(rowH);
+            if (ui_.button(uiHash("mat.glass", id), cell(row, 0, 3, gap), "Glass")) {
+                beginEdit(uiHash("mat.preset", id));
+                o.transmission = 1.0f, o.roughness = 0.0f, o.metallic = 0.0f, o.ior = 1.5f, o.opacity = 1.0f;
+            }
+            if (ui_.button(uiHash("mat.metalp", id), cell(row, 1, 3, gap), "Metal")) {
+                beginEdit(uiHash("mat.preset", id));
+                o.metallic = 1.0f, o.roughness = 0.25f, o.transmission = 0.0f;
+            }
+            if (ui_.button(uiHash("mat.plastic", id), cell(row, 2, 3, gap), "Matte")) {
+                beginEdit(uiHash("mat.preset", id));
+                o.metallic = 0.0f, o.roughness = 0.6f, o.transmission = 0.0f, o.ior = 1.45f;
+            }
+        }
         label(L, "Emission color (RGB)", theme::textDim);
         vec3Fields(L, "emi", id, o.emission, 0.004f, 0.0f, 1.0f, kRgbColor);
         floatRow(L, "Emission", "emi.str", id, o.emissionStrength, 0.02f, 0.0f, 100.0f);
-        floatRow(L, "Gloss", "gloss", id, o.gloss, 0.005f, 0.0f, 1.0f);
+
+        // --- PBR texture maps ---
+        ui_.header(L.row(headerH), "TEXTURES (PBR)");
+        for (int t = 0; t < TEX_COUNT; ++t) {
+            Rect r = L.row(rowH);
+            float lw = std::floor(r.w * 0.3f), bw = 10.0f * fs;
+            ui_.textIn({r.x, r.y, lw, r.h}, texSlotLabel(t), theme::textDim, false);
+            std::string path = o.textures[t];
+            Rect field{r.x + lw, r.y, r.w - lw - 2 * (bw + gap), r.h};
+            if (ui_.textField(uiHash("tex.path", id * 16u + t), field, path) && path != o.textures[t]) {
+                pushUndo();
+                o.textures[t] = path;
+                markDirty();
+                reportTexture(o.textures[t]);
+            }
+            if (ui_.button(uiHash("tex.browse", id * 16u + t), {field.x + field.w + gap, r.y, bw, r.h}, "+")) {
+                std::string picked = platform::openFileDialog("Choose a texture", true);
+                if (!picked.empty()) {
+                    pushUndo();
+                    o.textures[t] = picked;
+                    markDirty();
+                    reportTexture(picked);
+                }
+            }
+            if (ui_.button(uiHash("tex.clear", id * 16u + t), {r.x + r.w - bw, r.y, bw, r.h}, "x") &&
+                !o.textures[t].empty()) {
+                pushUndo();
+                o.textures[t].clear();
+                markDirty();
+            }
+            if (!o.textures[t].empty() && !textureCache().error(o.textures[t]).empty())
+                label(L, "  (can't load)", theme::error);
+        }
+        floatRow(L, "Bumpiness", "mat.nstr", id, o.normalStrength, 0.01f, 0.0f, 10.0f);
+        {
+            label(L, "UV tiling (U V)", theme::textDim);
+            Rect row = L.row(rowH);
+            float uvx = o.uvScale.x, uvy = o.uvScale.y;
+            if (ui_.dragFloat(uiHash("mat.uvx", id), cell(row, 0, 2, gap), uvx, 0.01f, kAxisColor[0], 0.001f, 1000.0f)) {
+                beginEdit(uiHash("mat.uvx", id));
+                o.uvScale.x = uvx;
+            }
+            if (ui_.dragFloat(uiHash("mat.uvy", id), cell(row, 1, 2, gap), uvy, 0.01f, kAxisColor[1], 0.001f, 1000.0f)) {
+                beginEdit(uiHash("mat.uvy", id));
+                o.uvScale.y = uvy;
+            }
+        }
+        {
+            Rect row = L.row(rowH);
+            float lw = std::floor(row.w * 0.36f);
+            ui_.textIn({row.x, row.y, lw, row.h}, "Folder", theme::textDim, false);
+            if (ui_.textField(uiHash("tex.folder", id), {row.x + lw, row.y, row.w - lw, row.h}, pbrFolder_))
+                loadPbrFolder(o, pbrFolder_);
+            row = L.row(rowH);
+            if (ui_.button(uiHash("tex.folderbrowse", id), cell(row, 0, 2, gap), "Folder...")) {
+                std::string picked = platform::openFileDialog("Choose any image in the texture set", true);
+                if (!picked.empty()) {
+                    size_t slash = picked.find_last_of("/\\");
+                    pbrFolder_ = slash == std::string::npos ? picked : picked.substr(0, slash);
+                    loadPbrFolder(o, pbrFolder_);
+                }
+            }
+            if (ui_.button(uiHash("tex.reload", id), cell(row, 1, 2, gap), "Reload")) {
+                textureCache().clear();
+                setStatus("Textures will be reloaded from disk");
+            }
+        }
+        label(L, "Drop images on the window:", theme::textDim);
+        label(L, "slots picked by file name.", theme::textDim);
         Rect row = L.row(rowH);
         if (ui_.button(uiHash("shade.flat"), cell(row, 0, 2, gap), "Flat", !o.smooth) && o.smooth) setSmoothSelected(false);
         if (ui_.button(uiHash("shade.smooth"), cell(row, 1, 2, gap), "Smooth", o.smooth) && !o.smooth)
@@ -808,9 +1042,10 @@ void Editor::objectProperties(PanelLayout& L, Object& o, const Input& in) {
         LightSettings& ls = o.light;
         ui_.header(L.row(headerH), "LIGHT");
         Rect row = L.row(rowH);
-        static const char* const kTypes[3] = {"Point", "Sun", "Spot"};
-        for (int t = 0; t < 3; ++t)
-            if (ui_.button(uiHash("light.type", (uint32_t)t), cell(row, t, 3, gap), kTypes[t], (int)ls.type == t)) {
+        static const char* const kTypes[kLightTypeCount] = {"Point", "Sun", "Spot", "Area"};
+        for (int t = 0; t < kLightTypeCount; ++t)
+            if (ui_.button(uiHash("light.type", (uint32_t)t), cell(row, t, kLightTypeCount, gap), kTypes[t],
+                           (int)ls.type == t)) {
                 beginEdit(uiHash("light.type", id));
                 ls.type = (LightType)t;
             }
@@ -822,9 +1057,71 @@ void Editor::objectProperties(PanelLayout& L, Object& o, const Input& in) {
             floatRow(L, "Cone angle", "light.angle", id, ls.spotAngle, 0.3f, 1.0f, 179.0f);
             floatRow(L, "Edge blend", "light.blend", id, ls.spotBlend, 0.005f, 0.0f, 1.0f);
         }
+        if (ls.type == LightType::Area) {
+            floatRow(L, "Width", "light.w", id, ls.width, 0.01f, 0.001f, 1000.0f);
+            floatRow(L, "Height", "light.h", id, ls.height, 0.01f, 0.001f, 1000.0f);
+        }
+        {
+            Rect r = L.row(rowH);
+            if (ui_.button(uiHash("light.usek", id), cell(r, 0, 2, gap), "Temperature", ls.useTemperature)) {
+                beginEdit(uiHash("light.usek", id));
+                ls.useTemperature = !ls.useTemperature;
+            }
+            Vec3 k = kelvinToRGB(ls.temperature);
+            ui_.rect(cell(r, 1, 2, gap), Color{std::pow(k.x, 1 / 2.2f), std::pow(k.y, 1 / 2.2f), std::pow(k.z, 1 / 2.2f), 1});
+        }
+        if (ls.useTemperature) {
+            floatRow(L, "Kelvin", "light.kelvin", id, ls.temperature, 10.0f, 1000.0f, 40000.0f, true);
+            Rect r = L.row(rowH);
+            static const float kPresets[4] = {1900, 3200, 5600, 6500};
+            static const char* const kNames[4] = {"Candle", "Tungst.", "Day", "D65"};
+            for (int p = 0; p < 4; ++p)
+                if (ui_.button(uiHash("light.kp", (uint32_t)p), cell(r, p, 4, gap), kNames[p], ls.temperature == kPresets[p])) {
+                    beginEdit(uiHash("light.kelvin", id));
+                    ls.temperature = kPresets[p];
+                }
+            label(L, "Tints the color above.", theme::textDim);
+        }
         label(L, ls.type == LightType::Point ? "Shines all around." : "Shines along local -Y",
               theme::textDim);
         if (shading_ != SHADE_LIT) label(L, "Lit view shows it.", theme::selection);
+    } else if (o.kind == ObjectKind::Camera) {
+        PhysicalCamera& c = o.camera;
+        ui_.header(L.row(headerH), "CAMERA (PHYSICAL)");
+        floatRow(L, "Focal mm", "cam.focal", id, c.focalLength, 0.2f, 4.0f, 2000.0f);
+        floatRow(L, "Sensor mm", "cam.sensor", id, c.sensorWidth, 0.1f, 1.0f, 100.0f);
+        const float aspect = viewport_.w / std::max(1.0f, viewport_.h);
+        label(L, strf("FOV %.1f deg vertical", c.verticalFovDeg(aspect)), theme::textDim);
+        ui_.header(L.row(headerH), "EXPOSURE");
+        floatRow(L, "Aperture f/", "cam.fstop", id, c.fStop, 0.02f, 0.7f, 64.0f);
+        float denom = 1.0f / std::max(1e-6f, c.shutter);
+        if (floatRow(L, "Shutter 1/", "cam.shutter", id, denom, 0.5f, 0.001f, 64000.0f)) c.shutter = 1.0f / std::max(1e-6f, denom);
+        floatRow(L, "ISO", "cam.iso", id, c.iso, 1.0f, 25.0f, 409600.0f, true);
+        floatRow(L, "Comp. EV", "cam.ev", id, c.exposureComp, 0.01f, -10.0f, 10.0f);
+        label(L, strf("Exposure x%.2f (EV %+.1f)", c.exposure(), std::log2(std::max(1e-6f, c.exposure()))),
+              theme::textDim);
+        ui_.header(L.row(headerH), "DEPTH OF FIELD");
+        Rect row = L.row(rowH);
+        if (ui_.button(uiHash("cam.dof", id), row, "Depth of field", c.depthOfField)) {
+            beginEdit(uiHash("cam.dof", id));
+            c.depthOfField = !c.depthOfField;
+        }
+        floatRow(L, "Focus dist.", "cam.focus", id, c.focusDistance, 0.01f, 0.01f, 100000.0f);
+        float blades = (float)c.blades;
+        if (floatRow(L, "Blades", "cam.blades", id, blades, 0.05f, 0.0f, 12.0f, true)) c.blades = (int)blades;
+        label(L, strf("Aperture %.1f mm wide", c.focalLength / std::max(0.5f, c.fStop)), theme::textDim);
+        ui_.header(L.row(headerH), "VIEW");
+        row = L.row(rowH);
+        bool isRender = scene_.renderCameraIndex() == scene_.indexOf(id);
+        if (ui_.button(uiHash("cam.render", id), row, isRender ? "Render camera" : "Make render camera", isRender) &&
+            !isRender) {
+            beginEdit(uiHash("cam.render", id));
+            scene_.renderCamera = id;
+        }
+        row = L.row(rowH);
+        if (ui_.button(uiHash("cam.look", id), cell(row, 0, 2, gap), "Look (0)")) lookThroughCamera();
+        if (ui_.button(uiHash("cam.align", id), cell(row, 1, 2, gap), "To view")) alignActiveCameraToView();
+        label(L, "Looks along local -Z.", theme::textDim);
     } else if (o.kind == ObjectKind::Bone) {
         ui_.header(L.row(headerH), "BONE");
         floatRow(L, "Length", "bone.len", id, o.boneLength, 0.01f, 0.01f, 1000.0f);
@@ -1104,15 +1401,14 @@ void Editor::buildHelp() {
     static const char* const kCommon[][2] = {
         {"", ""},
         {"BOTH KEYMAPS", ""},
-        {"Tab", "Object / Edit (vertex) mode"},
+        {"Tab (Edit: 1 2 3 I)", "Edit mode (vertex/edge/face, inset)"},
         {"Ctrl+P / Alt+P", "Parent to active / clear parent"},
         {"U / Space / F", "Smart unwrap / particles / frame"},
         {"1 / 3 / 7  (Ctrl)  5", "Front / right / top (opposite); ortho"},
-        {"Ctrl+Z / Ctrl+Y", "Undo / redo"},
-        {"Ctrl+S / Ctrl+O", "Save / load the scene named in File"},
-        {"F3 / F12 / F1", "Stats / screenshot / this help"},
-        {"F5", "Path-traced render (Render tab)"},
-        {"Ctrl/Shift+click list", "Multi-select: toggle / range"},
+        {"Ctrl+Z Y / Ctrl+S O", "Undo, redo / save, load (File tab)"},
+        {"F3 / F12 / F1 / F5", "Stats / screenshot / help / render"},
+        {"0 / Ctrl+Alt+0", "Camera view / camera to this view"},
+        {"Drag in the list", "Parent / reorder; Ctrl/Shift multi"},
         {"Keys / Camera tabs", "Rebind keys (defaults shown) / look"},
     };
     std::vector<std::pair<const char*, const char*>> rows;

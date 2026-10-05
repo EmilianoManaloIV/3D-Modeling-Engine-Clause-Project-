@@ -300,6 +300,28 @@ void setTitle(const std::string& title) {
 
 void showError(const std::string& message) { std::fprintf(stderr, "Modeler3D error: %s\n", message.c_str()); }
 
+std::string openFileDialog(const std::string& title, bool images) {
+    // No toolkit of our own: use zenity (GNOME) or kdialog (KDE) if present.
+    std::string t = title;
+    for (char& c : t)
+        if (c == '"' || c == '\\' || c == '$' || c == '`') c = ' ';
+    const std::string filter = images ? " --file-filter=\"Images | *.png *.jpg *.jpeg *.tga *.bmp\"" : "";
+    const std::string cmds[2] = {"zenity --file-selection --title=\"" + t + "\"" + filter + " 2>/dev/null",
+                                 "kdialog --getopenfilename . 2>/dev/null"};
+    for (const std::string& cmd : cmds) {
+        FILE* p = popen(cmd.c_str(), "r");
+        if (!p) continue;
+        char buf[4096];
+        std::string out;
+        while (std::fgets(buf, sizeof buf, p)) out += buf;
+        int rc = pclose(p);
+        while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+        if (rc == 0 && !out.empty()) return out;
+        if (rc == 0 || rc == 256) return "";  // ran, but cancelled
+    }
+    return "";
+}
+
 void sleepMs(int ms) {
     timespec ts{ms / 1000, (long)(ms % 1000) * 1000000L};
     nanosleep(&ts, nullptr);

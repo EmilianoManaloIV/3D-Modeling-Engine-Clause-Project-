@@ -99,6 +99,8 @@ void deleteVertices(Mesh& m, std::vector<char>& selection);
 // walls are created along the region boundary and the selection moves to the
 // new (extruded) vertices. Returns false if no whole face was selected.
 bool extrudeSelectedFaces(Mesh& m, std::vector<char>& selection, Vec3* outNormal);
+// Same for an explicit list of faces (face-select mode).
+bool extrudeFaces(Mesh& m, const std::vector<int>& faces, std::vector<char>& selection, Vec3* outNormal);
 
 // Faces whose vertices are all selected.
 std::vector<int> selectedFaces(const Mesh& m, const std::vector<char>& selection);

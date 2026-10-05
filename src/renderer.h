@@ -31,6 +31,7 @@ struct GpuLight {
     int type = 0;  // LightType
     Vec3 pos, dir, color;  // color already multiplied by intensity
     float range = 10, cosInner = 1, cosOuter = 0;
+    Vec3 axisU, axisV;     // area light half extents
 };
 
 struct FrameParams {
@@ -46,8 +47,12 @@ struct FrameParams {
 struct MaterialParams {
     Vec3 color;
     Vec3 emission;  // color * strength
-    float gloss = 0.5f;
+    float roughness = 0.5f, metallic = 0.0f;
+    float opacity = 1.0f, transmission = 0.0f, ior = 1.45f, normalStrength = 1.0f;
+    Vec2 uvScale{1, 1};
+    unsigned textures[TEX_COUNT] = {};  // GL texture ids, 0 = none
     float highlight = 0;
+    bool transparent() const { return opacity < 0.999f || transmission > 0.001f; }
 };
 
 // Compiles and links a vertex + fragment shader pair (0 on error, message in err).
@@ -91,6 +96,15 @@ public:
     // when `key` changes (edit-mode overlay of dense meshes).
     void drawLinesCached(int slot, uint64_t key, const std::vector<LineVertex>& v, const FrameParams& f,
                          const Mat4& model, bool depthTest, bool points, float pointSize);
+    // Translucent triangles (3 vertices each) pulled slightly towards the
+    // camera so they sit on top of the surface they highlight.
+    void drawTrianglesCached(int slot, uint64_t key, const std::vector<LineVertex>& v, const FrameParams& f,
+                             const Mat4& model, bool depthTest);
+
+    // GL texture for an image file (loaded through the texture cache, mipmapped).
+    // 0 if it cannot be loaded. Base color / emission maps are sRGB-decoded in the shader.
+    unsigned texture(const std::string& path);
+    size_t textureCount() const { return textures_.size(); }
 
     // Frees GPU buffers of objects that no longer exist.
     void purge(const Scene& scene);
@@ -131,9 +145,11 @@ private:
         int mask, offset, size, radius, active, other;
     } outlineU_{};
     struct {
-        int model, viewProj, normalMatrix, color, emission, gloss, camPos, keyDir, fillDir, highlight, mode, ambient,
-            lightCount, checker;
-        int lightPos[kMaxLights], lightDir[kMaxLights], lightColor[kMaxLights], lightParams[kMaxLights];
+        int model, viewProj, normalMatrix, color, emission, roughness, metallic, opacity, transmission, ior,
+            normalStrength, uvScale, texMask, camPos, keyDir, fillDir, highlight, mode, ambient, lightCount, checker;
+        int tex[TEX_COUNT];
+        int lightPos[kMaxLights], lightDir[kMaxLights], lightColor[kMaxLights], lightParams[kMaxLights],
+            lightU[kMaxLights], lightV[kMaxLights];
     } meshU_{};
     struct {
         int model, viewProj, tint, fadeCenter, fadeRadius, pointSize, roundPoints;
@@ -150,6 +166,11 @@ private:
     unsigned particleVao_ = 0, particleVbo_ = 0;
     unsigned fontTex_ = 0, checkerTex_ = 0;
     std::unordered_map<uint32_t, GpuMesh> cache_;
+    struct GpuTexture {
+        unsigned id = 0;
+        const void* image = nullptr;  // identity of the cached image it was made from
+    };
+    std::unordered_map<std::string, GpuTexture> textures_;
     std::vector<RenderVertex> scratch_;
     std::vector<uint32_t> scratchIndices_;
     std::vector<LineVertex> scratchLines_;

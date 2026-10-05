@@ -264,7 +264,7 @@ static void testPathTracer() {
     // radiance = albedo * N.L + specK * (N.H)^shininess, as in the viewport.
     Scene sc;
     int plane = sc.add(primitives::plane(10.0f), "Floor", {0.5f, 0.5f, 0.5f});
-    sc.objects[plane].gloss = 0.0f;
+    sc.objects[plane].roughness = 1.0f;
     Object sun;
     sun.kind = ObjectKind::Light;
     sun.name = "Sun";
@@ -283,7 +283,10 @@ static void testPathTracer() {
     CHECK(data.triangleCount() == 2 && data.lights.size() == 1 && data.materials.size() == 1);
     rt::Rng rng(1);
     Vec3 c = rt::trace(data, s, {0.3f, 3, 0.2f}, {0, -1, 0}, rng);
-    const float albedo = std::pow(0.5f, 2.2f), expect = albedo + 0.03f;
+    // PBR, light and view along the normal: pi * (diffuse + GGX specular) with
+    // D = 1/pi (roughness 1), G = 1 and F = F0 = ((ior - 1) / (ior + 1))^2.
+    const float albedo = std::pow(0.5f, 2.2f), f0 = std::pow(0.45f / 2.45f, 2.0f);
+    const float expect = (1.0f - f0) * albedo + f0 / 4.0f;
     CHECK(near(c, Vec3(expect, expect, expect), 1e-3f));
     // A ray that misses sees the sky.
     sc.ambient = {0.1f, 0.2f, 0.3f};
@@ -295,13 +298,13 @@ static void testPathTracer() {
     sc.objects[blocker].position = {0, 2, 0};
     rt::buildScene(sc, s, data);
     CHECK(near(rt::trace(data, s, {0.1f, 1.0f, 0.1f}, {0, -1, 0}, rng), Vec3(), 1e-5f));
-    // Emission is seen directly (black, matte cube: only the 0.03 highlight is added).
+    // Emission is seen directly (black, rough cube: only the F0/4 highlight is added).
     sc.objects[blocker].color = {0, 0, 0};
-    sc.objects[blocker].gloss = 0.0f;
+    sc.objects[blocker].roughness = 1.0f;
     sc.objects[blocker].emission = {1, 0.5f, 0.25f};
     sc.objects[blocker].emissionStrength = 2.0f;
     rt::buildScene(sc, s, data);
-    CHECK(near(rt::trace(data, s, {0, 5, 0}, {0, -1, 0}, rng), Vec3(2.03f, 1.03f, 0.53f), 1e-3f));
+    CHECK(near(rt::trace(data, s, {0, 5, 0}, {0, -1, 0}, rng), Vec3(2, 1, 0.5f) + Vec3(1, 1, 1) * (f0 / 4.0f), 1e-3f));
     // With bounces, the floor under the glowing cube receives its light.
     s.maxBounces = 3;
     sc.objects.erase(sc.objects.begin() + 1);  // remove the sun

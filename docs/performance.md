@@ -141,11 +141,66 @@ reuses the face normal and allocates nothing, which restored both numbers.
 File I/O timings (save / load / OBJ) vary up to 4x between runs on this laptop (disk cache and
 antivirus scanning). The rest of the report is stable to about ±10%.
 
+## Round 6: materials, textures, edit tools and hardware ray tracing
+
+The new features add work in hot paths (texture lookups, a full metallic-roughness BRDF, glass,
+transparent shadows), so each one was measured before and after. During these runs the laptop was
+heavily loaded by background applications: even the default scene took 6.5 ms instead of 3.6 ms, and
+Catmull-Clark took 57-87 ms instead of 34. So the comparisons below are **ratios measured in the
+same run, back to back**, not against the older tables.
+
+| Change | Before | After | Speed-up |
+|---|---:|---:|---:|
+| Edit-mode picking: 100 rays vs a 262k-triangle mesh | 254.9 ms (brute force) | 0.1 ms (picking BVH) | ~2500x |
+| JPEG decode, Huffman: 9-bit lookahead table (best of 6) | 318 ms | 275 ms | 1.16x |
+| JPEG decode, IDCT: fixed-point separable (jidctint) instead of float cosine sums | 537 ms | 187 ms | 2.9x |
+| Shadow rays through scenes with see-through objects: opaque any-hit test first | nearest-hit walk for every shadow ray | early-out on the first opaque hit | restores the pre-transparency speed |
+
+- **Picking BVH.** Edge, face and vertex picking need occlusion tests (a hidden edge must not be
+  picked), and object picking used to raycast every triangle. Each mesh now keeps a BVH
+  (`MeshAccel` in `bvh.h`) keyed on its geometry version. It is built once per edit (80 ms at 262k
+  triangles, only when that mesh is picked) and used by object picking for meshes with 512+
+  triangles. This removes the "1.2 ms per ray" cost listed under the remaining costs before.
+- **JPEG decoder.** Textures are often multi-megapixel JPEGs, so decode time is load time. The first
+  version decoded Huffman codes bit by bit and evaluated the IDCT as float cosine sums. The decoder
+  now resolves codes of up to 9 bits with one table lookup, skips the IDCT for flat (DC-only) blocks,
+  and uses the integer IDCT from the IJG library. Output differs from the float version by at most
+  3 levels out of 255, and the tests compare against reference images. Texture sets are decoded in
+  parallel on the job system (`TextureCache::preload`).
+- **Transparent shadows.** Glass and alpha surfaces let light through, so shadow rays must find every
+  surface on the way instead of any one. Doing that for every shadow ray made scenes slower even
+  when nothing was transparent. All three tracers (CPU, GLSL, DXR) now first ask "is there an opaque
+  triangle in the way?", which ends at the first hit, and walk the see-through surfaces only when the
+  scene has any. In the DXR tracer the opaque and see-through triangles are separate BLAS geometries,
+  so the hardware skips the shader call for opaque hits.
+- **Texture sampling on the CPU** decodes sRGB through a 256-entry table instead of three `pow` calls
+  per lookup, and Fresnel uses multiplies instead of `pow(x, 5)`.
+- **GLSL tracer** data textures share one row width passed as a uniform, instead of a `textureSize`
+  query for every fetch.
+- **Mesh editing.** The concave-face check in `buildRenderMesh` uses an allocation-free
+  cross-product test.
+
+**The cost of the new material model.** A full GGX metallic-roughness BRDF with textures, glass and
+alpha costs more per sample than the old Blinn-Phong-style model: about 15% on the CPU tracer and
+about 45% on the GLSL tracer, measured on the same scene back to back. The latest run (above
+background load) traced 2.32 Msamples/s on 12 CPU threads and 12.7 Msamples/s on the Iris Xe; see
+[benchmark-report.md](benchmark-report.md).
+
+**Hardware ray tracing (RTX device).** The *RTX* device uses DXR 1.1 inline ray queries in a compute
+shader, so ray/triangle and BVH traversal run on RT cores. The Iris Xe in the test laptop has no DXR
+support, so the DXR path was validated on Microsoft's WARP software device. Its image matches the CPU
+tracer (mean 162.9 vs 162.8, mean absolute difference 1.4/255 with glass and alpha in the scene), but
+WARP runs on the CPU, so **no RT-core speed numbers were measured**. On RTX-class GPUs, hardware
+traversal is typically several times faster than the GLSL tracer's BVH walk in a fragment shader.
+The tracer submits work without blocking (fences, adaptive rows per submit) and reads back about
+10 times a second, so the UI stays responsive.
+
 ## Known remaining costs
 
-- **Single raycast against a very dense mesh:** about 1.2 ms per ray at 262k triangles, because
-  editor picking does not use the path tracer's BVH yet. Fine for clicks. Edit-mode vertex picking
-  can do up to 32 occlusion rays on such a mesh.
+- **Picking BVH rebuilds** after every edit of a dense mesh (80 ms at 262k triangles), on the first
+  pick after the edit. A refit instead of a rebuild would cut that.
+- **Texture uploads** are synchronous: the first frame after loading a large texture set waits for
+  mipmap generation.
 - **Live render restarts** rebuild the BVH and re-upload the scene on every change (e.g. each frame
   of a drag). That takes a few ms for normal scenes and about 70 ms at 262k triangles.
 - **Undo snapshots** copy the whole scene (11 ms with a 131k-quad mesh). A command/delta-based undo

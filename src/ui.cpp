@@ -1,5 +1,7 @@
 #include "ui.h"
 
+#include "expr.h"
+
 #include "font.h"
 #include "math3d.h"
 
@@ -64,6 +66,7 @@ void UI::begin(const Input& in, int screenW, int screenH, int fontScale) {
     inputEnabled_ = true;
     activeSeen_ = editSeen_ = false;
     keyboardUsed_ = editId_ != 0;
+    prevFieldId_ = 0;
 }
 
 void UI::end() {
@@ -71,6 +74,7 @@ void UI::end() {
     // A widget that disappeared (e.g. its object was deleted) releases focus.
     if (activeId_ && !activeSeen_) activeId_ = 0;
     if (editId_ && !editSeen_) editId_ = 0;
+    tabFromId_ = 0;  // Tab on the last field of the frame: nothing follows
 }
 
 void UI::beginCmd(const Rect& clip) {
@@ -236,48 +240,110 @@ bool UI::swatch(uint32_t id, const Rect& r, Color c, bool selected) {
     return clicked;
 }
 
+void UI::beginEdit(uint32_t id, const std::string& text) {
+    editId_ = id;
+    editSeen_ = true;  // opened this frame: don't let end() close it as "not drawn"
+    editBuf_ = text;
+    editCaret_ = (int)editBuf_.size();
+    editAllSelected_ = true;
+}
+
 void UI::editKeys(std::string& buf, bool numeric) {
     keyboardUsed_ = true;
+    if (editJustOpened_) return;
+    const bool ctrl = in_->ctrl();
+    editCaret_ = std::max(0, std::min(editCaret_, (int)buf.size()));
+    auto eraseSelection = [&]() {
+        if (editAllSelected_) {
+            buf.clear();
+            editCaret_ = 0;
+            editAllSelected_ = false;
+            return true;
+        }
+        return false;
+    };
+    if (ctrl && in_->keyPressed['A']) {
+        editAllSelected_ = true;
+        editCaret_ = (int)buf.size();
+    }
     for (char c : in_->text) {
         if (buf.size() >= 120) break;
-        if (numeric && !(std::isdigit((unsigned char)c) || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
-            continue;
-        buf.push_back(c);
+        if (numeric && !(std::isdigit((unsigned char)c) || std::strchr(".-+eE*/()^= piPI", c))) continue;
+        eraseSelection();
+        buf.insert(buf.begin() + editCaret_, c);
+        ++editCaret_;
     }
-    if (in_->keyRepeat[KEY_BACKSPACE] && !buf.empty()) buf.pop_back();
+    if (in_->keyRepeat[KEY_BACKSPACE] && !eraseSelection() && editCaret_ > 0) {
+        buf.erase(buf.begin() + editCaret_ - 1);
+        --editCaret_;
+    }
+    if (in_->keyRepeat[KEY_DELETE] && !eraseSelection() && editCaret_ < (int)buf.size())
+        buf.erase(buf.begin() + editCaret_);
+    if (in_->keyRepeat[KEY_LEFT]) {
+        editCaret_ = editAllSelected_ ? 0 : std::max(0, editCaret_ - 1);
+        editAllSelected_ = false;
+    }
+    if (in_->keyRepeat[KEY_RIGHT]) {
+        editCaret_ = editAllSelected_ ? (int)buf.size() : std::min((int)buf.size(), editCaret_ + 1);
+        editAllSelected_ = false;
+    }
+    if (in_->keyPressed[KEY_HOME]) editCaret_ = 0, editAllSelected_ = false;
+    if (in_->keyPressed[KEY_END]) editCaret_ = (int)buf.size(), editAllSelected_ = false;
+}
+
+void UI::drawEditText(const Rect& r, Color borderColor, Color textColor) {
+    rect(r, theme::panelDark);
+    border(r, borderColor, (float)fs);
+    const float pad = 3.0f * fs;
+    // Scroll so the caret stays visible.
+    int first = 0;
+    while (first < editCaret_ && textWidth(editBuf_.substr(first, editCaret_ - first)) > r.w - 3 * pad) ++first;
+    std::string shown = editBuf_.substr(first);
+    while (!shown.empty() && textWidth(shown) > r.w - 3 * pad) shown.pop_back();
+    const float y = r.y + (r.h - glyphH()) * 0.5f;
+    if (editAllSelected_ && !shown.empty())
+        rect({r.x + pad - fs, y - fs, textWidth(shown) + 2.0f * fs, glyphH() + 2.0f * fs}, withAlpha(theme::accent, 0.6f));
+    text(r.x + pad, y, shown, textColor);
+    if (!editAllSelected_) {
+        float cx = r.x + pad + textWidth(editBuf_.substr(first, editCaret_ - first));
+        rect({std::floor(cx), y - fs, (float)fs, glyphH() + 2.0f * fs}, theme::white);
+    }
 }
 
 bool UI::dragFloat(uint32_t id, const Rect& r, float& value, float speed, Color accentColor, float lo, float hi) {
     bool hot = hovered(r);
     bool changed = false;
 
+    // Tab from the previous field opens this one.
+    if (tabFromId_ != 0 && prevFieldId_ == tabFromId_ && editId_ == 0) {
+        beginEdit(id, editableNumber(value));
+        editJustOpened_ = true;
+        tabFromId_ = 0;
+    }
+    prevFieldId_ = id;
+
     if (editId_ == id) {  // typing a value
         editSeen_ = true;
         editKeys(editBuf_, true);
         bool clickedAway = in_->mousePressed[MOUSE_LEFT] && !r.contains(mx(), my());
-        if (in_->keyPressed[KEY_ESCAPE]) {
+        if (editJustOpened_) {
+            editJustOpened_ = false;
+        } else if (in_->keyPressed[KEY_ESCAPE]) {
             editId_ = 0;
         } else if (in_->keyPressed[KEY_ENTER] || in_->keyPressed[KEY_TAB] || clickedAway) {
-            char* end = nullptr;
-            float v = std::strtof(editBuf_.c_str(), &end);
-            if (end != editBuf_.c_str() && std::isfinite(v)) {
-                v = clampf(v, lo, hi);
-                if (v != value) {
-                    value = v;
+            double v = 0;
+            if (expr::evaluate(editBuf_, value, v)) {
+                float f = clampf((float)v, lo, hi);
+                if (f != value) {
+                    value = f;
                     changed = true;
                 }
             }
+            if (in_->keyPressed[KEY_TAB]) tabFromId_ = id;
             editId_ = 0;
         }
         if (editId_ == id) {
-            rect(r, theme::panelDark);
-            border(r, accentColor, (float)fs);
-            float pad = 3.0f * fs;
-            std::string shown = editBuf_;
-            while (!shown.empty() && textWidth(shown) > r.w - 3 * pad) shown.erase(shown.begin());
-            float y = r.y + (r.h - glyphH()) * 0.5f;
-            text(r.x + pad, y, shown, theme::white);
-            rect({std::floor(r.x + pad + textWidth(shown) + fs), y, (float)fs, glyphH()}, theme::white);
+            drawEditText(r, accentColor, theme::white);
             return changed;
         }
     }
@@ -303,10 +369,7 @@ bool UI::dragFloat(uint32_t id, const Rect& r, float& value, float speed, Color 
             }
         }
         if (!in_->mouseDown[MOUSE_LEFT]) {
-            if (!dragMoved_) {  // plain click -> start typing
-                editId_ = id;
-                editBuf_ = editableNumber(value);
-            }
+            if (!dragMoved_) beginEdit(id, editableNumber(value));  // plain click -> start typing
             activeId_ = 0;
         }
     }
@@ -326,14 +389,11 @@ bool UI::dragFloat(uint32_t id, const Rect& r, float& value, float speed, Color 
 bool UI::textField(uint32_t id, const Rect& r, std::string& value) {
     bool hot = hovered(r);
     bool committed = false;
-    if (editId_ != id && hot && in_->mousePressed[MOUSE_LEFT] && activeId_ == 0) {
-        editId_ = id;
-        editBuf_ = value;
-    }
-    bool editing = editId_ == id;
-    if (editing) {
+    if (editId_ != id && hot && in_->mousePressed[MOUSE_LEFT] && activeId_ == 0) beginEdit(id, value);
+    if (editId_ == id) {
         editSeen_ = true;
         editKeys(editBuf_, false);
+        editJustOpened_ = false;
         bool clickedAway = in_->mousePressed[MOUSE_LEFT] && !r.contains(mx(), my());
         if (in_->keyPressed[KEY_ESCAPE]) {
             editId_ = 0;
@@ -342,15 +402,15 @@ bool UI::textField(uint32_t id, const Rect& r, std::string& value) {
             committed = true;
             editId_ = 0;
         }
+        if (editId_ == id) {
+            drawEditText(r, theme::accent, theme::text);
+            return committed;
+        }
     }
-    rect(r, editing ? theme::panelDark : hot ? theme::buttonHover : theme::field);
-    if (editing && editId_ == id) border(r, theme::accent, (float)fs);
+    rect(r, hot ? theme::buttonHover : theme::field);
     float pad = 3.0f * fs;
-    std::string shown = (editing && editId_ == id) ? editBuf_ : value;
+    std::string shown = value;
     while (!shown.empty() && textWidth(shown) > r.w - 3 * pad) shown.erase(shown.begin());
-    float y = r.y + (r.h - glyphH()) * 0.5f;
-    text(r.x + pad, y, shown, theme::text);
-    if (editing && editId_ == id)
-        rect({std::floor(r.x + pad + textWidth(shown) + fs), y, (float)fs, glyphH()}, theme::white);
+    text(r.x + pad, r.y + (r.h - glyphH()) * 0.5f, shown, theme::text);
     return committed;
 }

@@ -7,10 +7,13 @@
 //   editor_actions.cpp commands (create, mesh/UV/rig tools, hierarchy, files)
 //   editor_ui.cpp      panels, viewport header, UV editor, dialogs
 //   editor_render.cpp  3D viewport drawing, gizmos, lights, particles
+#include "bvh.h"
 #include "csg.h"
 #include "gpu_tracer.h"
+#include "hwrt.h"
 #include "pathtracer.h"
 #include "input_map.h"
+#include "meshedit.h"
 #include "particles.h"
 #include "platform.h"
 #include "renderer.h"
@@ -31,7 +34,8 @@ struct AppOptions {
     std::string configPath;       // settings file (keymap); empty = don't persist
     // --render <out.png>: path-trace the scene, save it (+ a .txt report) and exit.
     std::string renderOut;
-    std::string renderDevice;     // "cpu" / "gpu" (default: GPU if available)
+    std::string renderDevice;     // "cpu" / "gpu" / "rtx" (default: RTX, else GPU, if available)
+    bool allowWarp = false;       // --rt-warp: let the RTX device use software DXR (WARP)
     int renderSamples = 0;        // 0 = Render tab default
     int renderPercent = 0;        // resolution % (0 = default)
 };
@@ -115,6 +119,15 @@ private:
     void addEmpty();
     void addBone(bool asChildOfActive);
     void addEmitter();
+    void addCamera();
+    void reportTexture(const std::string& path);
+    void handleDroppedFiles(const std::vector<std::string>& files);
+    void loadPbrFolder(Object& o, const std::string& folder);         // assign maps found in a folder by name
+    int assignTextureByName(Object& o, const std::string& file);      // slot used, or -1
+    std::string pbrFolder_;
+    void alignCameraToView(Object& camera);  // camera object <- the editor view (position, direction, FOV)
+    void lookThroughCamera();                // editor view <- the render camera
+    void alignActiveCameraToView();
     void duplicateSelected();
     void deleteSelected();
     void subdivideSelected();
@@ -139,6 +152,26 @@ private:
     void setSmoothSelected(bool smooth);
     void selectAll();
     void extrude();
+    // --- edit mode: selection modes, edge extrude, inset (editor_editmode.cpp) ---
+    enum class SelMode { Vertex, Edge, Face };
+    void setSelMode(SelMode m);
+    void syncEditSelection();
+    void selectionFromVertices();
+    void verticesFromSelection();
+    std::vector<int> editFaceList();
+    int countEditSelection();
+    int pickEdge(Vec2 p, meshedit::Edge& out);
+    int pickFace(Vec2 p);
+    void clickSelectEdit(Vec2 p, bool extend);
+    void boxSelectEdit(Vec2 a, Vec2 b, bool extend, bool subtract);
+    void selectAllEdit();
+    void extrudeEdit();
+    void deleteEdit();
+    void insetSelected(bool interactive);
+    void applyLastOp();
+    bool lastOpAdjustable();
+    bool updateInsetModal(const Input& in);
+    const MeshAccel& meshAccel(const Object& o);
     void setMode(Mode m);
     void frameSelected();
     void setView(float yaw, float pitch);
@@ -267,6 +300,24 @@ private:
     Camera cam_;
     Mode mode_ = Mode::Object;
     std::vector<char> vsel_;  // edit-mode vertex selection of the active mesh
+    SelMode selMode_ = SelMode::Vertex;
+    std::vector<char> fsel_;                // face selection (face mode)
+    std::vector<meshedit::Edge> esel_;      // edge selection (edge mode), sorted
+    uint64_t selTopology_ = 0;              // topology the edge / face selection belongs to
+    uint32_t selObject_ = 0;
+    struct MeshOp {  // the last topology tool, re-run when its settings change
+        enum Type { None, Inset } type = None;
+        uint32_t objectId = 0;
+        Mesh before;
+        std::vector<int> faces;
+        meshedit::InsetParams inset;
+        uint64_t resultVersion = 0;
+    } lastOp_;
+    meshedit::InsetParams insetDefaults_;
+    bool insetModal_ = false;
+    Vec2 insetCenter_, insetStartMouse_;
+    float insetWorldPerPixel_ = 0.01f;
+    std::unordered_map<uint32_t, MeshAccel> meshAccel_;  // picking BVHs, per object
 
     // matrices & layout (recomputed every frame)
     Mat4 view_, proj_, viewProj_;
@@ -344,6 +395,19 @@ private:
     int sceneGizmoHover_ = -1;
     uint32_t lastOutlinerClickId_ = 0;
     uint32_t outlinerAnchorId_ = 0;  // Shift+click range start in the hierarchy
+    // Hierarchy drag & drop
+    uint32_t dragRowId_ = 0;        // row pressed (candidate for a drag)
+    Vec2 dragPress_;
+    bool dragActive_ = false;
+    bool dragDeferSelect_ = false;  // plain click on a selected row: select it alone on release
+    enum DropZone { DropNone, DropBefore, DropOnto, DropAfter, DropRoot };
+public:
+    // Moves `ids` (and their subtrees) in the hierarchy: onto = parent to the
+    // target, before/after = become the target's sibling at that position,
+    // root = unparent and move to the end. Keeps world transforms. Returns
+    // false if the move is impossible (e.g. onto one of its own children).
+    bool moveInHierarchy(const std::vector<uint32_t>& ids, uint32_t targetId, int zone);
+private:
     double lastOutlinerClickTime_ = -1;
     bool showStats_ = false;
 
@@ -373,7 +437,8 @@ private:
     bool csgTriangulate_ = true, csgKeepCutters_ = false;
     // Rendering (Render tab)
     struct RenderSettings {
-        bool gpu = true;            // device: GPU fragment-shader tracer or CPU threads
+        int device = 0;             // DEV_GPU (OpenGL), DEV_CPU or DEV_RTX (DirectX ray tracing)
+        bool allowWarp = false;     // RTX device: allow Microsoft's software DXR (WARP) for testing
         float samples = 128;        // samples per pixel (progressive target)
         float bounces = 4;          // max path length after the first hit
         float resolution = 100;     // % of the viewport size
@@ -383,8 +448,21 @@ private:
         bool studioLights = true;   // studio key/fill when the scene has no lamps
         float gpuBudgetMs = 12;     // GPU time spent tracing per frame
         float cpuThreads = 0;       // 0 = all hardware threads
+        bool useCamera = true;      // render through the scene's camera object (if there is one)
     } renderSet_;
-    bool renderView_ = false, renderGpu_ = false, renderAutoUpdate_ = true;
+    enum { DEV_GPU = 0, DEV_CPU = 1, DEV_RTX = 2 };
+    static const char* renderDeviceName(int device);
+    bool ensureHwrt();
+    double renderSeconds() const;
+    double renderRate() const;
+    bool renderView_ = false, renderAutoUpdate_ = true;
+    int renderDevice_ = 0;
+    float renderExposure_ = 1.0f;
+    HwRayTracer hwrt_;
+    HwRtInfo hwrtInfo_;
+    std::string hwrtError_;
+    bool hwrtWarp_ = false;
+    std::vector<uint8_t> hwrtImage_;
     rt::CpuRenderer cpuRender_;
     GpuTracer gpuTracer_;
     bool gpuTracerOk_ = false;
@@ -427,6 +505,7 @@ private:
     int colorCursor_ = 1;
     std::vector<LineVertex> grid_;
     std::vector<std::pair<int, int>> editEdges_;
+    std::vector<LineVertex> editFill_;  // selected faces (face mode)
     uint64_t editEdgesVersion_ = ~0ull;  // topology stamp the edge list was built from
     std::vector<LineVertex> editLines_, editPoints_;
     uint64_t editOverlayKey_ = ~0ull;

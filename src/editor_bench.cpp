@@ -273,9 +273,15 @@ void Editor::benchmarkOperations() {
         timeIt("Smart UV unwrap (131k quads)", [&] { uv::unwrap(m, uv::Method::Smart); });
         timeIt("Pack UV islands (131k quads)", [&] { uv::pack(m); });
     }
-    timeIt("Raycast 100 rays vs 262k tris", [&] {
+    timeIt("Raycast 100 rays vs 262k tris (brute force)", [&] {
         float t;
         for (int k = 0; k < 100; ++k) raycastMesh(dense, {0.01f * k, 0.3f, 5}, {0, 0, -1}, t);
+    });
+    MeshAccel accel;
+    timeIt("Picking BVH build (262k tris, once per edit)", [&] { accel.build(dense, dense.verts); });
+    timeIt("Raycast 100 rays vs 262k tris (picking BVH)", [&] {
+        float t;
+        for (int k = 0; k < 100; ++k) accel.raycast({0.01f * k, 0.3f, 5}, {0, 0, -1}, t);
     });
 
     clearForBenchmark();

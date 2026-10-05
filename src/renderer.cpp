@@ -1,5 +1,7 @@
 #include "renderer.h"
 
+#include "image_load.h"
+
 #include "font.h"
 #include "gl.h"
 #include "profiler.h"
@@ -8,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <unordered_set>
 
 namespace {
@@ -35,8 +38,15 @@ void main() {
 }
 )";
 
-// Blinn-Phong (FoCG 5e sec. 5.2) evaluated in linear space and gamma-encoded
-// at the end. Point/spot lights use a windowed inverse-square falloff.
+// Physically based shading (metallic-roughness, the same model as the path
+// tracers in pathtracer.cpp): GGX specular with Schlick Fresnel and Smith
+// masking, Lambert diffuse, scaled by pi so a lamp of intensity 1 facing a
+// white surface gives 1 (FoCG 5e sec. 5.2 / 14.4; GEA Vol. II ch. 12).
+// Textures: base color, normal (tangent frame from screen-space
+// derivatives, so no tangent attribute is needed), roughness (G), metallic
+// (B), AO (R), emission, opacity. Lights: point / sun / spot with a windowed
+// inverse-square falloff, and rectangular area lights approximated by their
+// closest point to the shaded pixel.
 const char* kMeshFS = R"(#version 330 core
 #define MAX_LIGHTS 8
 in vec3 vWorld;
@@ -45,7 +55,10 @@ in vec2 vUV;
 in float vWeight;
 uniform vec3 uColor;
 uniform vec3 uEmission;
-uniform float uGloss;
+uniform float uRoughness, uMetallic, uOpacity, uTransmission, uIor, uNormalStrength;
+uniform vec2 uUvScale;
+uniform int uTexMask;  // bit i: texture slot i is bound
+uniform sampler2D uTex0, uTex1, uTex2, uTex3, uTex4, uTex5, uTex6;
 uniform vec3 uCamPos;
 uniform vec3 uKeyDir;
 uniform vec3 uFillDir;
@@ -57,25 +70,80 @@ uniform vec3 uLightPos[MAX_LIGHTS];
 uniform vec3 uLightDir[MAX_LIGHTS];
 uniform vec3 uLightColor[MAX_LIGHTS];
 uniform vec4 uLightParams[MAX_LIGHTS];  // type, range, cos(inner), cos(outer)
+uniform vec3 uLightU[MAX_LIGHTS];       // area light half extents
+uniform vec3 uLightV[MAX_LIGHTS];
 uniform sampler2D uChecker;
 out vec4 fragColor;
 
+const float PI = 3.14159265;
 vec3 heat(float w) {
     return clamp(vec3(1.5 - abs(4.0 * w - 3.0), 1.5 - abs(4.0 * w - 2.0), 1.5 - abs(4.0 * w - 1.0)), 0.0, 1.0);
+}
+bool has(int slot) { return (uTexMask & (1 << slot)) != 0; }
+
+vec3 baseColor; float metallic, roughness, ao; vec3 F0;
+
+// pi * BRDF * (n.l)
+vec3 shade(vec3 n, vec3 v, vec3 l) {
+    float nl = dot(n, l);
+    if (nl <= 0.0) return vec3(0.0);
+    float nv = max(dot(n, v), 1e-4);
+    vec3 h = normalize(l + v);
+    float nh = max(dot(n, h), 0.0), vh = max(dot(v, h), 0.0);
+    float a = max(0.002, roughness * roughness), a2 = a * a;
+    float d = nh * nh * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * d * d);
+    float k = a * 0.5;
+    float G = (nl / (nl * (1.0 - k) + k)) * (nv / (nv * (1.0 - k) + k));
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - vh, 5.0);
+    vec3 spec = F * D * G / (4.0 * nl * nv);
+    vec3 kd = (1.0 - F) * baseColor * (1.0 - metallic) * (1.0 - uTransmission) / PI;
+    return (kd + spec) * PI * nl;
 }
 
 void main() {
     vec3 n = normalize(vNormal);
     if (!gl_FrontFacing) n = -n;               // two-sided lighting
     vec3 v = normalize(uCamPos - vWorld);
-    vec3 base = pow(uColor, vec3(2.2));        // sRGB -> linear
-    if (uMode == 2) base = pow(texture(uChecker, vUV).rgb, vec3(2.2));
-    if (uMode == 3) base = pow(mix(vec3(0.05, 0.05, 0.35), heat(vWeight), step(0.001, vWeight)), vec3(2.2));
-    float shininess = mix(6.0, 160.0, uGloss * uGloss);
-    float specK = mix(0.03, 0.6, uGloss);
+    vec2 uv = vUV * uUvScale;
+    baseColor = pow(uColor, vec3(2.2));        // sRGB -> linear
+    float alpha = uOpacity;
+    metallic = uMetallic;
+    roughness = uRoughness;
+    ao = 1.0;
+    vec3 emission = uEmission;
+    if (uMode <= 1) {
+        if (has(0)) { vec4 t = texture(uTex0, uv); baseColor *= pow(t.rgb, vec3(2.2)); alpha *= t.a; }
+        if (has(2)) roughness *= texture(uTex2, uv).g;
+        if (has(3)) metallic *= texture(uTex3, uv).b;
+        if (has(4)) ao = texture(uTex4, uv).r;
+        if (has(5)) emission *= pow(texture(uTex5, uv).rgb, vec3(2.2));
+        if (has(6)) alpha *= texture(uTex6, uv).r;
+        if (has(1)) {
+            vec3 m = texture(uTex1, uv).xyz * 2.0 - 1.0;
+            m.xy *= uNormalStrength;
+            // Tangent frame from derivatives (Schueler, "Normal mapping without precomputed tangents").
+            vec3 dp1 = dFdx(vWorld), dp2 = dFdy(vWorld);
+            vec2 du1 = dFdx(uv), du2 = dFdy(uv);
+            vec3 p2 = cross(dp2, n), p1 = cross(n, dp1);
+            vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
+            float s = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+            vec3 nm = normalize(mat3(T * s, B * s, n) * m);
+            if (dot(nm, nm) > 0.5) n = nm;
+        }
+    }
+    if (uMode == 2) baseColor = pow(texture(uChecker, vUV).rgb, vec3(2.2));
+    if (uMode == 3) baseColor = pow(mix(vec3(0.05, 0.05, 0.35), heat(vWeight), step(0.001, vWeight)), vec3(2.2));
+    if (uMode >= 2) { metallic = 0.0; roughness = 0.5; }
+    float f = (uIor - 1.0) / (uIor + 1.0);
+    F0 = mix(vec3(f * f), baseColor, metallic);
+    float nv = max(dot(n, v), 1e-4);
+    vec3 Fv = F0 + (1.0 - F0) * pow(1.0 - nv, 5.0);
+    vec3 r = reflect(-v, n);
     vec3 c;
     if (uMode == 1) {
-        c = base * uAmbient;
+        // Ambient: diffuse + a rough environment reflection of the ambient colour.
+        c = (baseColor * (1.0 - metallic) * (1.0 - Fv) + Fv * (1.0 - 0.5 * roughness)) * uAmbient * ao;
         for (int i = 0; i < MAX_LIGHTS; ++i) {
             if (i >= uLightCount) break;
             vec4 prm = uLightParams[i];
@@ -83,35 +151,43 @@ void main() {
             float att = 1.0;
             if (prm.x > 0.5 && prm.x < 1.5) {          // sun
                 L = -uLightDir[i];
-            } else {                                     // point / spot
-                vec3 d = uLightPos[i] - vWorld;
+            } else {                                     // point / spot / area
+                vec3 lp = uLightPos[i];
+                if (prm.x > 2.5) {                       // area: closest point of the rectangle
+                    vec3 q = vWorld - lp;
+                    float lu = clamp(dot(q, uLightU[i]) / max(dot(uLightU[i], uLightU[i]), 1e-8), -1.0, 1.0);
+                    float lv = clamp(dot(q, uLightV[i]) / max(dot(uLightV[i], uLightV[i]), 1e-8), -1.0, 1.0);
+                    lp += uLightU[i] * lu + uLightV[i] * lv;
+                }
+                vec3 d = lp - vWorld;
                 float dist = length(d);
                 L = d / max(dist, 1e-4);
                 float x = clamp(1.0 - pow(dist / prm.y, 4.0), 0.0, 1.0);
                 att = x * x / (dist * dist + 1.0);
-                if (prm.x > 1.5) att *= smoothstep(prm.w, prm.z, dot(-L, uLightDir[i]));
+                if (prm.x > 1.5 && prm.x < 2.5) att *= smoothstep(prm.w, prm.z, dot(-L, uLightDir[i]));
+                if (prm.x > 2.5) att *= max(dot(-L, uLightDir[i]), 0.0);
             }
-            float ndl = max(dot(n, L), 0.0);
-            vec3 h = normalize(L + v);
-            float spec = ndl > 0.0 ? pow(max(dot(n, h), 0.0), shininess) * specK : 0.0;
-            c += (base * ndl + vec3(spec)) * uLightColor[i] * att;
+            c += shade(n, v, L) * uLightColor[i] * att;
         }
     } else {
-        float key = max(dot(n, uKeyDir), 0.0);
-        float fill = max(dot(n, uFillDir), 0.0);
-        vec3 ambient = mix(vec3(0.07, 0.065, 0.06), vec3(0.17, 0.19, 0.23), n.y * 0.5 + 0.5);
-        vec3 h = normalize(uKeyDir + v);
-        float spec = key > 0.0 ? pow(max(dot(n, h), 0.0), shininess) * specK : 0.0;
-        c = base * (ambient + key * vec3(1.0, 0.97, 0.92) * 0.95 + fill * vec3(0.55, 0.62, 0.75) * 0.30) + vec3(spec);
+        vec3 skyLo = vec3(0.07, 0.065, 0.06), skyHi = vec3(0.17, 0.19, 0.23);
+        vec3 ambient = mix(skyLo, skyHi, n.y * 0.5 + 0.5);
+        vec3 env = mix(skyLo, skyHi * 1.6, r.y * 0.5 + 0.5);
+        c = (baseColor * (1.0 - metallic) * (1.0 - Fv) * ambient + Fv * env * (1.0 - 0.6 * roughness)) * ao;
+        c += shade(n, v, uKeyDir) * vec3(1.0, 0.97, 0.92) * 0.95 + shade(n, v, uFillDir) * vec3(0.55, 0.62, 0.75) * 0.30;
     }
-    if (uMode != 3) c += uEmission;
+    if (uMode != 3) c += emission;
     float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
     c += vec3(1.0, 0.45, 0.08) * rim * uHighlight * 0.30;   // selection glow
     if (!gl_FrontFacing) c *= 0.6;                          // reveal inside / flipped faces
     // Soft shoulder: values below 0.8 are untouched, brighter ones approach 1
     // smoothly instead of clipping (bright lights / strong emission).
     c = mix(c, 0.8 + 0.2 * (1.0 - exp(-(c - 0.8) / 0.2)), step(0.8, c));
-    fragColor = vec4(pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
+    // Transparency: alpha blending; glass keeps its reflections visible.
+    float a = alpha * (1.0 - 0.8 * uTransmission);
+    a = max(a, max(Fv.r, max(Fv.g, Fv.b)) * step(0.001, uTransmission));
+    if (uMode >= 2) a = 1.0;
+    fragColor = vec4(pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2)), clamp(a, 0.0, 1.0));
 }
 )";
 
@@ -348,7 +424,19 @@ bool Renderer::init(std::string& error) {
     meshU_.normalMatrix = loc(meshProg_, "uNormalMatrix");
     meshU_.color = loc(meshProg_, "uColor");
     meshU_.emission = loc(meshProg_, "uEmission");
-    meshU_.gloss = loc(meshProg_, "uGloss");
+    meshU_.roughness = loc(meshProg_, "uRoughness");
+    meshU_.metallic = loc(meshProg_, "uMetallic");
+    meshU_.opacity = loc(meshProg_, "uOpacity");
+    meshU_.transmission = loc(meshProg_, "uTransmission");
+    meshU_.ior = loc(meshProg_, "uIor");
+    meshU_.normalStrength = loc(meshProg_, "uNormalStrength");
+    meshU_.uvScale = loc(meshProg_, "uUvScale");
+    meshU_.texMask = loc(meshProg_, "uTexMask");
+    for (int t = 0; t < TEX_COUNT; ++t) {
+        char name[16];
+        std::snprintf(name, sizeof name, "uTex%d", t);
+        meshU_.tex[t] = loc(meshProg_, name);
+    }
     meshU_.camPos = loc(meshProg_, "uCamPos");
     meshU_.keyDir = loc(meshProg_, "uKeyDir");
     meshU_.fillDir = loc(meshProg_, "uFillDir");
@@ -367,6 +455,10 @@ bool Renderer::init(std::string& error) {
         meshU_.lightColor[i] = loc(meshProg_, name);
         std::snprintf(name, sizeof name, "uLightParams[%d]", i);
         meshU_.lightParams[i] = loc(meshProg_, name);
+        std::snprintf(name, sizeof name, "uLightU[%d]", i);
+        meshU_.lightU[i] = loc(meshProg_, name);
+        std::snprintf(name, sizeof name, "uLightV[%d]", i);
+        meshU_.lightV[i] = loc(meshProg_, name);
     }
 
     lineU_.model = loc(lineProg_, "uModel");
@@ -553,7 +645,22 @@ void Renderer::drawMesh(uint32_t id, uint64_t key, const Mesh& mesh, const std::
     gl::UniformMatrix4fv(meshU_.normalMatrix, 1, GL_FALSE, normalMatrix.m);
     gl::Uniform3f(meshU_.color, mat.color.x, mat.color.y, mat.color.z);
     gl::Uniform3f(meshU_.emission, mat.emission.x, mat.emission.y, mat.emission.z);
-    gl::Uniform1f(meshU_.gloss, mat.gloss);
+    gl::Uniform1f(meshU_.roughness, mat.roughness);
+    gl::Uniform1f(meshU_.metallic, mat.metallic);
+    gl::Uniform1f(meshU_.opacity, mat.opacity);
+    gl::Uniform1f(meshU_.transmission, mat.transmission);
+    gl::Uniform1f(meshU_.ior, mat.ior);
+    gl::Uniform1f(meshU_.normalStrength, mat.normalStrength);
+    gl::Uniform2f(meshU_.uvScale, mat.uvScale.x, mat.uvScale.y);
+    int texMask = 0;
+    for (int t = 0; t < TEX_COUNT; ++t) {
+        gl::Uniform1i(meshU_.tex[t], 2 + t);
+        gl::ActiveTexture(GL_TEXTURE0 + 2 + t);
+        gl::BindTexture(GL_TEXTURE_2D, mat.textures[t] ? mat.textures[t] : checkerTex_);
+        if (mat.textures[t]) texMask |= 1 << t;
+    }
+    gl::ActiveTexture(GL_TEXTURE0);
+    gl::Uniform1i(meshU_.texMask, texMask);
     gl::Uniform3f(meshU_.camPos, f.cameraPos.x, f.cameraPos.y, f.cameraPos.z);
     gl::Uniform3f(meshU_.keyDir, f.keyLightDir.x, f.keyLightDir.y, f.keyLightDir.z);
     gl::Uniform3f(meshU_.fillDir, f.fillLightDir.x, f.fillLightDir.y, f.fillLightDir.z);
@@ -568,6 +675,8 @@ void Renderer::drawMesh(uint32_t id, uint64_t key, const Mesh& mesh, const std::
         gl::Uniform3f(meshU_.lightDir[i], L.dir.x, L.dir.y, L.dir.z);
         gl::Uniform3f(meshU_.lightColor[i], L.color.x, L.color.y, L.color.z);
         gl::Uniform4f(meshU_.lightParams[i], (float)L.type, std::max(0.01f, L.range), L.cosInner, L.cosOuter);
+        gl::Uniform3f(meshU_.lightU[i], L.axisU.x, L.axisU.y, L.axisU.z);
+        gl::Uniform3f(meshU_.lightV[i], L.axisV.x, L.axisV.y, L.axisV.z);
     }
     gl::Uniform1i(meshU_.checker, 1);
     gl::ActiveTexture(GL_TEXTURE0 + 1);
@@ -578,10 +687,39 @@ void Renderer::drawMesh(uint32_t id, uint64_t key, const Mesh& mesh, const std::
     gl::Enable(GL_POLYGON_OFFSET_FILL);
     gl::PolygonOffset(1.0f, 1.0f);
     gl::BindVertexArray(g.vao);
+    const bool transparent = mat.transparent() && f.shading <= SHADE_LIT;
+    if (transparent) gl::DepthMask(GL_FALSE);  // sorted back to front by the caller
     gl::DrawElements(GL_TRIANGLES, g.triVerts, GL_UNSIGNED_INT, nullptr);
+    if (transparent) gl::DepthMask(GL_TRUE);
     prof::count("draw calls", 1);
     prof::count("triangles drawn", g.triVerts / 3);
     gl::Disable(GL_POLYGON_OFFSET_FILL);
+}
+
+unsigned Renderer::texture(const std::string& path) {
+    if (path.empty()) return 0;
+    auto img = textureCache().get(path);
+    GpuTexture& t = textures_[path];
+    if (!img) return 0;
+    if (t.id && t.image == img.get()) return t.id;
+    PROF_SCOPE("texture upload");
+    if (!t.id) gl::GenTextures(1, &t.id);
+    gl::BindTexture(GL_TEXTURE_2D, t.id);
+    gl::PixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    // Images are stored top row first; GL's v = 0 is the bottom row, which
+    // matches UV conventions once we flip rows on upload.
+    std::vector<uint8_t> flipped(img->rgba.size());
+    const size_t row = (size_t)img->width * 4;
+    for (int y = 0; y < img->height; ++y)
+        std::memcpy(&flipped[(size_t)y * row], &img->rgba[(size_t)(img->height - 1 - y) * row], row);
+    gl::TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img->width, img->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, flipped.data());
+    gl::GenerateMipmap(GL_TEXTURE_2D);
+    gl::TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    gl::TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl::TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    gl::TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    t.image = img.get();
+    return t.id;
 }
 
 void Renderer::drawMeshEdges(uint32_t id, uint64_t key, const Mesh& mesh, const std::vector<Vec3>& positions,
@@ -673,6 +811,28 @@ void Renderer::drawLinesCached(int slot, uint64_t key, const std::vector<LineVer
         b.key = key;
     }
     if (b.count) drawBound(b.vao, b.count, points ? GL_POINTS : GL_LINES, f, model, depthTest, 0.0f, Vec3(), pointSize);
+}
+
+void Renderer::drawTrianglesCached(int slot, uint64_t key, const std::vector<LineVertex>& v, const FrameParams& f,
+                                   const Mat4& model, bool depthTest) {
+    LineBatch& b = lineBatches_[slot];
+    if (!b.vao) {
+        gl::GenVertexArrays(1, &b.vao);
+        gl::GenBuffers(1, &b.vbo);
+        setupLineVao(b.vao, b.vbo);
+    }
+    if (b.key != key) {
+        gl::BindBuffer(GL_ARRAY_BUFFER, b.vbo);
+        gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(v.size() * sizeof(LineVertex)), v.data(), GL_DYNAMIC_DRAW);
+        b.count = (int)v.size();
+        b.key = key;
+    }
+    if (!b.count) return;
+    gl::Enable(GL_POLYGON_OFFSET_FILL);
+    gl::PolygonOffset(-1.0f, -2.0f);
+    gl::Disable(GL_CULL_FACE);
+    drawBound(b.vao, b.count, GL_TRIANGLES, f, model, depthTest, 0.0f, Vec3(), 1.0f);
+    gl::Disable(GL_POLYGON_OFFSET_FILL);
 }
 
 void Renderer::drawLines(const std::vector<LineVertex>& v, const FrameParams& f, const Mat4& model, bool depthTest,

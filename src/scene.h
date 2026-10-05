@@ -8,18 +8,23 @@
 #include "mesh.h"
 #include "parametric.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-enum class ObjectKind { Mesh = 0, Light, Empty, Bone, Emitter };
+enum class ObjectKind { Mesh = 0, Light, Empty, Bone, Emitter, Camera };
+constexpr int kObjectKindCount = 6;
 const char* kindName(ObjectKind k);
 
-enum class LightType { Point = 0, Sun, Spot };
+enum class LightType { Point = 0, Sun, Spot, Area };
+constexpr int kLightTypeCount = 4;
 
-// Punctual light (FoCG 5e sec. 5.1; GEA Vol. II sec. 12.5). A sun or spot
-// shines along the object's local -Y axis.
+// Lights (FoCG 5e sec. 5.1; GEA Vol. II sec. 12.5). Sun, spot and area lights
+// shine along the object's local -Y axis; an area light is a one-sided
+// rectangle in the local XZ plane (width along X, height along Z).
 struct LightSettings {
     LightType type = LightType::Point;
     Vec3 color{1.0f, 0.95f, 0.85f};
@@ -27,7 +32,46 @@ struct LightSettings {
     float range = 25.0f;
     float spotAngle = 40.0f;  // full cone angle, degrees
     float spotBlend = 0.25f;  // 0 = hard edge, 1 = soft
+    float width = 1.0f, height = 1.0f;  // area light size
+    // Colour temperature (Kelvin), multiplied with `color` when enabled
+    // (like Unity's "Use Color Temperature").
+    bool useTemperature = false;
+    float temperature = 6500.0f;
+    Vec3 finalColor() const;  // color (x temperature tint), linear RGB
 };
+
+// Black-body colour of a temperature in Kelvin (1000-40000), as linear RGB
+// normalised so the brightest channel is 1. 6500 K is close to white.
+Vec3 kelvinToRGB(float kelvin);
+
+// A physical camera (thin-lens model, FoCG 5e sec. 4.3 / 13.4 depth of
+// field). It looks along its local -Z axis with +Y up.
+//  - Field of view from focal length and sensor width (36 mm = full frame).
+//  - Depth of field: the lens aperture is focalLength / fStop wide, and
+//    objects at focusDistance are sharp.
+//  - Exposure combines ISO, shutter time and f-number like a real camera,
+//    relative to f/8, 1/125 s, ISO 100 (= 1x, "EV 0") plus compensation.
+struct PhysicalCamera {
+    float focalLength = 50.0f;  // mm
+    float sensorWidth = 36.0f;  // mm
+    float fStop = 8.0f;
+    float focusDistance = 5.0f;  // scene units (metres)
+    float iso = 100.0f;
+    float shutter = 1.0f / 125.0f;  // seconds
+    float exposureComp = 0.0f;      // EV stops
+    int blades = 0;                 // 0 = round aperture, 5..9 = polygonal bokeh
+    bool depthOfField = true;
+    float verticalFovDeg(float aspect) const;
+    float exposure() const;  // linear multiplier
+    float apertureRadius() const { return focalLength / std::max(0.5f, fStop) * 0.5f * 0.001f; }  // metres
+};
+
+// Texture slots of the PBR material (metallic-roughness, as in glTF).
+// Grayscale maps work in every slot; packed "ORM" maps work too because
+// roughness reads green, metallic blue and AO red.
+enum TexSlot { TEX_BASE = 0, TEX_NORMAL, TEX_ROUGHNESS, TEX_METALLIC, TEX_AO, TEX_EMISSION, TEX_OPACITY, TEX_COUNT };
+const char* texSlotName(int slot);
+const char* texSlotLabel(int slot);
 
 struct ParticleSettings {
     float rate = 60;         // particles per second
@@ -59,7 +103,17 @@ struct Object {
     Vec3 color{0.8f, 0.8f, 0.8f};
     Vec3 emission{1.0f, 1.0f, 1.0f};
     float emissionStrength = 0.0f;  // 0 = no glow
-    float gloss = 0.5f;
+    // PBR (metallic-roughness): base color = `color`.
+    float roughness = 0.5f;
+    float metallic = 0.0f;
+    float opacity = 1.0f;        // alpha: 1 = solid, 0 = invisible
+    float transmission = 0.0f;   // glass: refracts light through the surface
+    float ior = 1.45f;           // index of refraction for transmission / Fresnel
+    float normalStrength = 1.0f;
+    Vec2 uvScale{1.0f, 1.0f};    // texture tiling
+    std::string textures[TEX_COUNT];  // image paths; empty = unused
+    bool hasTextures() const;
+    bool transparent() const { return opacity < 0.999f || transmission > 0.001f; }
     bool smooth = true;
     ParametricSpec param;  // active() -> mesh is regenerated from the recipe
 
@@ -78,6 +132,9 @@ struct Object {
     // Emitter
     ParticleSettings particles;
 
+    // Camera
+    PhysicalCamera camera;
+
     // Local matrix M = T * R * S (FoCG 5e sec. 7.5 / GEA Vol. I sec. 5.3).
     Mat4 matrix() const { return translation(position) * eulerToMatrix(rotation) * scaling(scale); }
     bool isMesh() const { return kind == ObjectKind::Mesh; }
@@ -88,6 +145,8 @@ struct Scene {
     int active = -1;  // index of the active object, or -1
     uint32_t nextId = 1;
     Vec3 ambient{0.05f, 0.055f, 0.07f};
+    uint32_t renderCamera = 0;  // camera object used for rendering (0 = the first camera, if any)
+    int renderCameraIndex() const;
 
 private:
     // `objects` is edited freely all over the editor, so the cache validates
@@ -124,7 +183,10 @@ public:
 };
 
 // Ray picking of meshes (FoCG 5e ch. 4): index of the nearest hit mesh.
-int pickObject(const Scene& scene, Vec3 origin, Vec3 dir, float* tOut = nullptr);
+// `localRaycast` (optional) intersects an unskinned mesh object `index` with a
+// ray given in its local space, e.g. through a cached BVH; returns the hit t.
+using LocalRaycast = std::function<bool(int index, Vec3 origin, Vec3 dir, float& t)>;
+int pickObject(const Scene& scene, Vec3 origin, Vec3 dir, float* tOut = nullptr, const LocalRaycast& localRaycast = {});
 
 // Native scene format (.m3d, plain text: transforms, hierarchy, materials,
 // lights, UVs, skinning, emitters, parametric recipes).
@@ -134,3 +196,10 @@ bool loadScene(Scene& scene, const std::string& path, std::string& err);
 // Wavefront OBJ (+ .mtl with object colors). Export bakes transforms / pose.
 bool exportOBJ(const Scene& scene, const std::string& path, std::string& err, int* exportedCount = nullptr);
 bool importOBJ(Scene& scene, const std::string& path, std::string& err, int* firstNewIndex = nullptr);
+
+// Outliner drag & drop. Onto = parent to the target; Before / After = become
+// the target's sibling at that position; Root = unparent and move to the end.
+// Moves the top-most of `ids` (children follow), keeps world transforms.
+// Returns false if impossible (dropping onto itself or into its own subtree).
+enum class HierarchyDrop { None = 0, Before = 1, Onto = 2, After = 3, Root = 4 };
+bool moveInHierarchy(Scene& scene, const std::vector<uint32_t>& ids, uint32_t targetId, HierarchyDrop zone);

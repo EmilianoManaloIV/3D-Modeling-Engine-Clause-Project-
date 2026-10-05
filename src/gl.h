@@ -51,6 +51,7 @@ typedef unsigned long long GLuint64;
 #define GL_MAX_TEXTURE_SIZE 0x0D33
 #define GL_RGBA8 0x8058
 #define GL_RGBA32F 0x8814
+#define GL_TEXTURE_2D_ARRAY 0x8C1A
 #define GL_TIME_ELAPSED 0x88BF
 #define GL_QUERY_RESULT 0x8866
 #define GL_QUERY_RESULT_AVAILABLE 0x8867
@@ -112,6 +113,8 @@ typedef unsigned long long GLuint64;
                          GLenum format, GLenum type, const void* pixels))                                    \
     X(void, TexSubImage2D, (GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, \
                             GLenum type, const void* pixels))                                                \
+    X(void, TexImage3D, (GLenum target, GLint level, GLint internalformat, GLsizei w, GLsizei h, GLsizei d,     \
+                         GLint border, GLenum format, GLenum type, const void* pixels))                      \
     X(void, GetIntegerv, (GLenum pname, GLint * data))                                                       \
     X(void, GenQueries, (GLsizei n, GLuint * ids))                                                           \
     X(void, DeleteQueries, (GLsizei n, const GLuint* ids))                                                   \

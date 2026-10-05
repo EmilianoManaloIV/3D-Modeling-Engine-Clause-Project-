@@ -578,7 +578,10 @@ std::vector<int> selectedFaces(const Mesh& m, const std::vector<char>& sel) {
 
 bool extrudeSelectedFaces(Mesh& m, std::vector<char>& sel, Vec3* outNormal) {
     sel.resize(m.verts.size(), 0);
-    std::vector<int> region = selectedFaces(m, sel);
+    return extrudeFaces(m, selectedFaces(m, sel), sel, outNormal);
+}
+
+bool extrudeFaces(Mesh& m, const std::vector<int>& region, std::vector<char>& sel, Vec3* outNormal) {
     if (region.empty()) return false;
     const bool uvs = m.hasUVs(), weights = m.hasWeights();
 

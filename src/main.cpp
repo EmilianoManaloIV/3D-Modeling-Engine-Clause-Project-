@@ -5,12 +5,12 @@
 // each frame pumps OS events, updates, renders and swaps; tear down in reverse.
 //
 // Usage: Modeler3D [scene.m3d | model.obj]
-// Testing flags: --demo <0-5>   build a sample scene (5 = booleans)
+// Testing flags: --demo <0-6>   build a sample scene (5 = booleans, 6 = materials)
 //                --screenshot <file.png>   render a few frames, save, exit
 //                --benchmark <report.md>   run the performance scenarios, write a report, exit
 //                --frames <n>   frames to run before --screenshot (default 6)
 //                --threads <n>  CPU worker threads (default: all hardware threads)
-//                --render <out.png> [--device cpu|gpu] [--samples n] [--resolution pct]
+//                --render <out.png> [--device cpu|gpu|rtx] [--samples n] [--resolution pct] [--rt-warp]
 //                               path-trace the scene, save it (+ out.png.txt stats), exit
 #include "editor.h"
 #include "gl.h"
@@ -39,6 +39,7 @@ int main(int argc, char** argv) {
         else if (a == "--threads" && i + 1 < argc) threads = std::atoi(argv[++i]);
         else if (a == "--render" && i + 1 < argc) options.renderOut = argv[++i];
         else if (a == "--device" && i + 1 < argc) options.renderDevice = argv[++i];
+        else if (a == "--rt-warp") options.allowWarp = true;
         else if (a == "--samples" && i + 1 < argc) options.renderSamples = std::atoi(argv[++i]);
         else if (a == "--resolution" && i + 1 < argc) options.renderPercent = std::atoi(argv[++i]);
         else if (a == "--help-overlay") options.showHelp = true;

@@ -38,3 +38,16 @@ bool intersectBvh(const Bvh& bvh, const std::vector<Vec3>& v, Vec3 o, Vec3 d, fl
 // (indexed by triangle, may be null) are ignored.
 bool occludedBvh(const Bvh& bvh, const std::vector<Vec3>& v, Vec3 o, Vec3 d, float tMin, float tMax,
                  const std::vector<uint8_t>* skip = nullptr);
+
+// Ray casting against one mesh through a BVH, for picking. Triangles are the
+// faces' fans (as raycastMesh does); `triFace` maps them back to faces.
+struct Mesh;
+struct MeshAccel {
+    uint64_t key = ~0ull;
+    std::vector<Vec3> tris;  // 3 per triangle, in the mesh's local space
+    std::vector<int> triFace;
+    Bvh bvh;
+    void build(const Mesh& m, const std::vector<Vec3>& positions);
+    // Nearest hit t > 0 along o + t*d; `face` receives the face index.
+    bool raycast(Vec3 o, Vec3 d, float& t, int* face = nullptr) const;
+};

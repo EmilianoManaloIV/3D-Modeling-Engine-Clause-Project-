@@ -5,13 +5,14 @@
 //               tracing (and therefore whether it is being kept busy) without
 //               stalling the pipeline (GEA Vol. I sec. 10.8, profiling).
 //   GpuTracer - the path tracer of pathtracer.h running in a fragment shader.
-//               Triangles, BVH nodes and materials are uploaded as RGBA32F
-//               "data textures" (GLSL 3.30 has no storage buffers); every draw
-//               adds one sample to a band of rows of a float accumulation
-//               target (additive blending, sample count in alpha). The band
-//               height adapts to the measured GPU time so each frame keeps
-//               the GPU ~busy for a set budget while the UI stays smooth, and
-//               no single draw runs long enough to trip the OS GPU watchdog.
+//               Triangles, BVH nodes, materials and lights are uploaded as
+//               RGBA32F "data textures" (GLSL 3.30 has no storage buffers),
+//               textures as one RGBA8 texture array; every draw adds one
+//               sample to a band of rows of a float accumulation target
+//               (additive blending, sample count in alpha). The band height
+//               adapts to the measured GPU time so each frame keeps the GPU
+//               ~busy for a set budget while the UI stays smooth, and no
+//               single draw runs long enough to trip the OS GPU watchdog.
 #include "pathtracer.h"
 
 #include <cstdint>
@@ -63,38 +64,41 @@ public:
     int samples() const { return samples_; }
     int width() const { return w_; }
     int height() const { return h_; }
+    float exposure() const { return view_.exposure; }
     double elapsedSeconds() const;
     double samplesPerSecond() const;  // pixel samples per second
     double gpuMsPerFrame() const { return timer_.avgMs(); }
     unsigned accumTexture() const { return accumTex_; }
     // Reads back the accumulation buffer and tone-maps it (RGBA8, top row first).
     void readImage(std::vector<uint8_t>& rgba);
+    // Linear (unexposed) average of a pixel (x, y from the top), for tests.
+    Vec3 readPixel(int x, int y);
     size_t uploadedBytes() const { return uploadedBytes_; }
 
     // Display helpers (also used for CPU renders): upload an RGBA8 image, and
-    // draw either it or the GPU accumulation buffer into a GL viewport rect.
+    // draw either it or the GPU accumulation buffer (with `exposure`) into a
+    // GL viewport rect.
     void uploadImage(const std::vector<uint8_t>& rgba, int w, int h);
-    void present(bool accumulated, int x, int y, int w, int h);
+    void present(bool accumulated, int x, int y, int w, int h, float exposure = 1.0f);
     bool hasImage() const { return imageTex_ != 0; }
 
 private:
     unsigned presentProg_ = 0, imageTex_ = 0;
     int imageW_ = 0, imageH_ = 0;
     struct {
-        int image, accum;
+        int image, accum, exposure;
     } presentU_{};
-    unsigned uploadTexture(unsigned tex, const std::vector<float>& texels, int& widthOut);
+    unsigned uploadData(unsigned tex, const std::vector<float>& texels);
     unsigned prog_ = 0, vao_ = 0, fbo_ = 0, accumTex_ = 0;
-    unsigned triTex_ = 0, nodeTex_ = 0, matTex_ = 0;
-    int triW_ = 1, nodeW_ = 1, matW_ = 1;
+    unsigned triTex_ = 0, nodeTex_ = 0, matTex_ = 0, lightTex_ = 0, texArray_ = 0;
     struct {
-        int tris, nodes, mats, seed, size, eye, forward, right, up, tanHalf, orthoHalf, ortho, aspect,
-            maxBounces, clamp, skyLow, skyHigh, lightCount;
-        int lightPos[10], lightDir[10], lightColor[10], lightParams[10], lightRadius[10];
+        int tris, nodes, mats, lights, textures, lightCount, anyPass, width, seed, size, eye, forward, right, up, tanHalf, orthoHalf,
+            ortho, aspect, lensRadius, focusDist, blades, maxBounces, clamp, skyLow, skyHigh;
     } u_{};
     rt::View view_;
     rt::Settings settings_;
-    std::vector<rt::Light> lights_;
+    int lightCount_ = 0;
+    bool anyPass_ = false;
     Vec3 skyLow_, skyHigh_;
     int w_ = 0, h_ = 0, target_ = 0, samples_ = 0, row_ = 0;
     bool running_ = false, resumable_ = false;

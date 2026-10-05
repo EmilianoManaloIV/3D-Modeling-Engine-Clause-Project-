@@ -299,3 +299,30 @@ bool occludedBvh(const Bvh& bvh, const std::vector<Vec3>& v, Vec3 o, Vec3 d, flo
     }
     return false;
 }
+
+#include "mesh.h"
+
+void MeshAccel::build(const Mesh& m, const std::vector<Vec3>& p) {
+    tris.clear();
+    triFace.clear();
+    tris.reserve(m.triangleCount() * 3);
+    triFace.reserve(m.triangleCount());
+    for (int f = 0; f < (int)m.faces.size(); ++f) {
+        const auto& face = m.faces[f];
+        for (size_t i = 1; i + 1 < face.size(); ++i) {
+            tris.push_back(p[face[0]]);
+            tris.push_back(p[face[i]]);
+            tris.push_back(p[face[i + 1]]);
+            triFace.push_back(f);
+        }
+    }
+    bvh.build(tris);
+}
+
+bool MeshAccel::raycast(Vec3 o, Vec3 d, float& t, int* face) const {
+    Hit h;
+    if (!intersectBvh(bvh, tris, o, d, 1e-6f, h)) return false;
+    t = h.t;
+    if (face) *face = triFace[h.tri];
+    return true;
+}

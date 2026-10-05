@@ -30,8 +30,19 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
   snapping, duplicate, delete, rename, and numeric location / rotation / scale.
 - **Hierarchy multi-select**: Ctrl+click toggles an object, Shift+click selects the range from the
   last clicked row, and Ctrl+Shift+click adds a range.
-- **Edit mode** (vertices): select, move / rotate / scale, **extrude** faces, delete, edit the
-  median numerically. **Catmull-Clark subdivision** and **flip normals**.
+- **Edit mode** with **vertex, edge and face selection** (`1` `2` `3` or the *Mesh* tab): click, box
+  and Shift-add selection in each mode, with hidden edges and faces excluded. Move / rotate / scale
+  the selection, edit the median numerically, delete, **Catmull-Clark subdivision** and **flip normals**.
+- **Extrude** faces, or **extrude edges** (`Ctrl+E` in edge mode, or Shift + drag a Move handle): each
+  boundary edge grows a new quad that continues the face it belongs to.
+- **Inset faces** (`I`, then move the mouse; click or Enter confirms, Esc cancels): the *Last op* panel
+  then adjusts it, with **Width**, **Depth** (negative pushes the inset in, positive pulls it out),
+  **Dish** (lifts or sinks the centre for a concave or convex cap) and **Individual faces** (inset each
+  face on its own instead of the whole region). The inset keeps a constant width along the region's
+  border.
+- **Type into any number field**: click it (or Tab to the next field) and type a value or an
+  expression such as `2*pi`, `1/3`, `(4+2)^2` or a relative change: `+=0.5`, `*=2`. Caret, Home/End,
+  Ctrl+A and Backspace/Delete work as usual. Dragging sideways still works too.
 
 **Booleans and the n-gon solver** (*Mesh* tab)
 - **Union / Difference / Intersection** of closed meshes, using BSP trees. Select the cutter mesh(es),
@@ -47,6 +58,9 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
   correct triangles. The renderer uses it too, so concave faces display correctly.
 
 **Hierarchy**
+- **Drag and drop in the hierarchy**: drop a row onto another row to parent it, between rows to
+  reorder (and adopt that row's parent), or below the list to unparent it. Works with several
+  selected rows; dropping an object onto its own descendant is refused.
 - Parent objects to each other (`Ctrl+P`, the last-clicked object becomes the parent) or clear the
   parent (`Alt+P`). Both keep each object where it is in the world.
 - Children follow their parents: lights stuck to lamps, effects stuck to bones, groups under an
@@ -55,9 +69,21 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
   duplicating a whole rig remaps it to the copies.
 
 **Lighting and materials**
-- **Point, sun and spot lights** with color, intensity, range, cone angle and edge blend, plus a
-  scene **ambient** color. Up to 8 lights are used in the **Lit** view.
-- Materials have base color, **emission** (color + strength, glows in every view) and gloss.
+- **Point, sun, spot and area lights** with color, intensity, range, cone angle and edge blend, plus a
+  scene **ambient** color. Up to 8 lights are used in the **Lit** view. An **area light** is a
+  one-sided rectangle (width x height) that gives soft shadows in the path tracer.
+- **Color temperature**: switch a light to *Temperature* and set it in Kelvin (1000-40000 K), with
+  presets for candle (1900 K), tungsten (3200 K), daylight (5600 K) and D65 (6500 K).
+- **PBR materials** (metallic-roughness): base color, metallic, roughness, **emission**, and
+  **transparency**: *Opacity* (alpha, see-through without refraction) and *Transmit* (glass, refracting
+  with an index of refraction). Presets: Glass, Metal, Matte.
+- **PBR texture maps**: Color, Normal, Roughness, Metallic, AO, Emission and Alpha slots. Each slot
+  takes a file path (type it, use the file dialog, or **drag image files onto the window**; the
+  filename decides the slot: `*_normal`, `*_rough`, `*_orm`/`*_arm` packed maps, and so on).
+  *Folder...* loads a whole texture set from one folder. UV tiling and bumpiness are per material.
+  PNG (all bit depths, interlaced), baseline JPEG, TGA and BMP load with the built-in decoders; three
+  procedural sets (`builtin:bricks`, `builtin:tiles`, `builtin:metal`) need no files. The viewport
+  shows normal maps and transparency; the path tracers use every map.
 
 **Rendering (path tracing)** (*Render* tab, `F5`, or the *Render* button on the tool palette)
 - A Monte Carlo **path tracer** shows the scene in the viewport and refines it progressively:
@@ -66,14 +92,25 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
 - **Sampling controls**: samples per pixel (presets 16 / 64 / 256 / 1024, or any number; raising it
   continues a finished render), max bounces, resolution %, a firefly clamp, sky strength and soft
   shadow size.
-- **GPU or CPU**: the GPU tracer runs in a fragment shader (triangles, BVH and materials uploaded as
-  float textures). The CPU tracer spreads tiles over every core. Both use the same BVH and produce
-  the same image.
+- **Three devices**: *GPU* runs the tracer in a fragment shader (triangles, BVH and materials uploaded
+  as float textures). *CPU* spreads tiles over every core. *RTX* uses **hardware ray tracing**
+  (DirectX 12 DXR 1.1 inline ray queries, so RT cores on NVIDIA RTX / AMD RX 6000+ / Intel Arc)
+  when a supported GPU is detected, and becomes the default device then. All three use the same
+  materials and produce the same image. Without a DXR GPU the RTX button says why; *Software DXR*
+  runs the same code on Microsoft's WARP software device for testing.
+- **Render camera**: add a *Camera* object (Create tab) and render through it, with real camera
+  settings: focal length and sensor width, **f-stop** (aperture size and **depth of field**, with a
+  focus distance and polygonal aperture blades for the bokeh shape), **shutter speed** and **ISO**,
+  plus exposure compensation. Exposure follows the photographic exposure equation (f/8, 1/125 s, ISO 100
+  is the neutral setting). `0` looks through the camera, `Ctrl+Alt+0` moves it to the current view.
+- **Glass and transparency** are path traced: rough or smooth refraction with Fresnel reflection,
+  coloured transmission, and alpha-blended surfaces that let light and shadows through.
 - *Live*: moving the camera or editing the scene restarts the render. *Save PNG* writes the image,
   plus a `.txt` with its timings. Scenes without lamps are lit like the Studio view. Emissive
   surfaces don't cast shadows, so a lamp inside a glowing shade still lights the room. Particles
   are not path traced.
-- Command line: `Modeler3D --demo 1 --render out.png --device gpu --samples 256` renders and exits.
+- Command line: `Modeler3D --demo 6 --render out.png --device gpu --samples 256` renders and exits
+  (`--device cpu|gpu|rtx`; `--rt-warp` allows the WARP software device for `rtx`).
 
 **UVs**
 - **Unwrap**: *Smart* (charts by face direction, packed without overlap), *Box*, *Planar*,
@@ -157,8 +194,11 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
 
 **Everything else**
 - **Undo / redo** (64 steps) covers every edit.
-- **Save / load** `.m3d` scenes, and **export / import Wavefront OBJ** (+ `.mtl` with colors,
-  emission and gloss). Exports bake transforms and the current pose.
+- **Save / load** `.m3d` scenes (texture paths are stored relative to the scene), and
+  **export / import Wavefront OBJ** + `.mtl` with PBR values (`Pr`, `Pm`, `d`, `Tf`, `Ni`) and texture
+  maps (`map_Kd`, `map_Bump`/`norm`, `map_Pr`, ...). Exports bake transforms and the current pose.
+- **Drag files onto the window**: `.m3d` opens, `.obj` imports, images go into the selected object's
+  texture slots.
 - Shading modes **Studio / Lit / Checker / Weights** (`Z` cycles them).
 - Also: perspective / ortho, front / right / top views, wireframe, grid, orientation gizmo,
   F12 PNG screenshots (compressed), an **F3 performance overlay**, and a warning before quitting with
@@ -199,9 +239,13 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
 | Input | Action |
 |---|---|
 | `Tab` | Object / Edit mode |
+| `1` / `2` / `3` (Edit mode) | Vertex / edge / face selection |
+| `I` (Edit mode) | Inset the selected faces (mouse sets width; click confirms) |
+| `0` / `Ctrl+Alt+0` | Look through the render camera / move it to the current view |
+| Drag a row in the hierarchy | Parent (onto a row), reorder (between rows), unparent (below the list) |
 | `Ctrl+P` / `Alt+P` | Parent to the active object / clear parent |
 | `U` / `Space` / `F` | Smart unwrap / play-pause particles / frame selection |
-| `1` `3` `7` (Ctrl = opposite), `5` | Front / right / top view, perspective-orthographic |
+| `1` `3` `7` (Ctrl = opposite), `5` | Front / right / top view, perspective-orthographic (Object mode) |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+S` / `Ctrl+O` | Save / load the file named in the File tab |
 | `F3` / `F12` / `F1` | Performance overlay / PNG screenshot / help |
@@ -211,9 +255,28 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
 All of these are defaults. Change any of them in the **Keys** tab.
 
 The left panel has tabs: **Create, Mesh, UV, Rig, FX, Render, File, Keys, Camera**. To change a number in the right
-panel, drag it sideways (hold Shift for fine steps) or click it and type a value.
+panel, drag it sideways (hold Shift for fine steps) or click it and type a value or expression;
+Tab moves to the next field.
 
 ## Screenshots
+
+### Materials, render camera and area light
+
+![Glass, metal, plastic, brick and tile materials lit by a warm area light, rendered through a camera at f/2](docs/materials-render.png)
+
+*`Modeler3D --demo 6`, 1024 samples on the GPU: PBR texture sets on the floor and wall, a glass ball,
+gold and brushed steel, a see-through cube, a 3200 K area light and a 6500 K sun, through a 40 mm
+camera at f/2 with depth of field.*
+
+### Inset and face selection
+
+![A face-selected cube top inset with depth and dish, and the Last op panel with typed values](docs/edit-inset.png)
+
+*Face mode with an inset: the Last op panel's Width, Depth and Dish fields accept typed values.*
+
+### PBR texture slots
+
+![The material panel with Color, Normal, Rough and AO slots filled from a texture set](docs/pbr-textures.png)
 
 ### Path tracing
 
@@ -260,7 +323,9 @@ See [docs/performance.md](docs/performance.md) for the benchmark method, before/
 bottlenecks that were fixed. For example, 1000 objects went from 187 ms to 12 ms per frame, and
 loading a 131k-quad scene from 4.5 s to 0.13 s. The report also compares 1 thread with all threads and
 CPU with GPU path tracing. On the test laptop (Intel Iris Xe, 12 threads), the GPU path traces about 7x
-faster than all 12 CPU threads, and the CPU tracer scales about 5x from 1 to 12 threads. Run it yourself
+faster than all 12 CPU threads, and the CPU tracer scales about 5x from 1 to 12 threads. Round 6 added a
+picking BVH (edit-mode picking on a 262k-triangle mesh about 2500x faster) and a 3x faster JPEG decoder.
+Run it yourself
 with `Modeler3D --benchmark report.md`.
 
 ## Building from source
@@ -274,7 +339,8 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 (`sudo apt install build-essential cmake libx11-dev libgl-dev` on Debian/Ubuntu), then run
 `./build_linux.sh`. The result is `dist/linux/Modeler3D`.
 
-**Tests:** configure with `-DMODELER_BUILD_TESTS=ON` and run `modeler_tests`. Its 1604 checks cover:
+**Tests:** configure with `-DMODELER_BUILD_TESTS=ON` and run `modeler_tests`. Its 1738 checks
+(1734 on Linux, where the DXR test is skipped) cover:
 - math and TRS decomposition
 - primitives and all 10 parametric shapes (closed, consistently oriented, outward-facing)
 - Catmull-Clark (including UVs and weights), extrude / delete
@@ -290,6 +356,13 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 - the BVH (against brute force, and parallel against serial builds), and the path tracer's lighting,
   shadows, emission and progressive renderer
 - key bindings: parsing, presets without conflicts, rebinding and config round trips
+- the expression parser for typed values, edge extrusion and face inset (closed results, exact
+  volumes), picking BVH against brute force, hierarchy drag and drop (including refused cycles)
+- image decoders against reference PNGs (every color type and bit depth, Adam7) and JPEGs, the
+  inflate decoder, and the texture cache
+- color temperature, camera exposure, area lights, glass and transparency in the CPU tracer, `.m3d`
+  and MTL round trips of the new material data, and the DXR tracer against the CPU tracer (on Windows,
+  using WARP when no DXR GPU is present)
 
 ## How the code maps to the Engine Books
 
@@ -321,6 +394,12 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 | Job system / thread pool, parallel loops | `jobs.cpp` | GEA Vol. I ch. 4 (parallelism and concurrency), sec. 8.6 |
 | Input re-mapping, context-sensitive controls | `input_map.cpp` | GEA Vol. I sec. 9.5 (game engine HID systems) |
 | GPU timer queries, in-game profiling | `gpu_tracer.cpp` (`GpuTimer`) | GEA Vol. I sec. 10.8 |
+| Microfacet BRDF (GGX), Fresnel, refraction, glass | `pathtracer.cpp`, `hwrt.hlsl` | FoCG sec. 4.8 (refraction), ch. 14 (physics-based rendering) |
+| Thin-lens camera, depth of field | `rt::primaryRay` in `pathtracer.cpp` | FoCG sec. 13.4.3 (depth of field) |
+| Area lights, soft shadows | `pathtracer.cpp` | FoCG sec. 13.4.2, 14.4 |
+| Texture mapping, normal maps, mipmaps | `renderer.cpp`, `image_load.cpp` | FoCG ch. 11; GEA Vol. II sec. 11.2 |
+| Hardware ray tracing (DXR), acceleration structures | `hwrt.cpp`, `shaders/hwrt.hlsl` | GEA Vol. II sec. 11.4 (GPU pipeline); FoCG sec. 12.3 |
+| Mesh topology edits (edge extrude, inset) | `meshedit.cpp` | FoCG sec. 12.1 |
 
 ## Project layout
 
@@ -359,9 +438,16 @@ src/
   transform.*         Unity-style Transform API (world get/set, Translate, Rotate, LookAt...)
   profiler.*          scoped CPU profiler (F3 overlay, benchmark)
   image_io.*          PNG writer with its own DEFLATE compressor
+  image_load.*        PNG / JPEG / TGA / BMP decoders, inflate, texture cache, built-in texture sets
+  expr.*              expression parser for typed values
+  meshedit.*          edge / face selection conversion, edge extrude, inset
+  editor_editmode.cpp vertex / edge / face selection, picking, inset tool
+  hwrt.*              DXR 1.1 hardware ray tracer (Direct3D 12, loaded at run time; stub on Linux)
+  shaders/hwrt.hlsl   the DXR tracer's compute shader; hwrt_shader.inl is its compiled DXIL
+tools/compile_hwrt_shader.py  recompiles hwrt.hlsl with dxc from the Windows SDK
 docs/                 screenshots, performance.md, benchmark-report.md
-tests/tests.cpp       unit tests (+ tests_round5.inc)
+tests/tests.cpp       unit tests (+ tests_round5.inc, tests_round6.inc, data/ test images)
 ```
 
 Sample scenes for a quick tour: `Modeler3D --demo 1` (showcase), `--demo 3` (UVs), `--demo 4` (rig),
-`--demo 5` (booleans).
+`--demo 5` (booleans), `--demo 6` (materials, area light and render camera).

@@ -7,245 +7,250 @@ Each scenario: 15 warm-up frames, then 90 measured frames.
 
 ### 1. Default scene (baseline)
 
-**3.67 ms/frame (273 fps)** over 90 frames
+**6.50 ms/frame (154 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| gpu finish | 2.848 | 78% |
-| present (swap) | 0.392 | 11% |
-| viewport render | 0.223 | 6% |
-| ui build (panels) | 0.068 | 2% |
-| selection outline | 0.056 | 2% |
-| ui draw | 0.049 | 1% |
-| path trace | 0.030 | 1% |
-| ui build (overlays) | 0.011 | 0% |
-| gizmos | 0.010 | 0% |
+| gpu finish | 2.339 | 36% |
+| present (swap) | 1.600 | 25% |
+| viewport render | 1.266 | 19% |
+| selection outline | 0.483 | 7% |
+| ui build (panels) | 0.440 | 7% |
+| ui draw | 0.339 | 5% |
+| path trace | 0.225 | 3% |
+| ui build (overlays) | 0.065 | 1% |
+| gizmos | 0.044 | 1% |
+| input+tools | 0.021 | 0% |
 
 Per frame: draw calls 15, triangles drawn 12, objects 2
 
-GPU time for the viewport (GL timer queries): 0.974 ms/frame
+GPU time for the viewport (GL timer queries): 0.944 ms/frame
 
 ### 2. 1000 objects in hierarchies, all selected
 
-**13.24 ms/frame (76 fps)** over 90 frames
+**24.20 ms/frame (41 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| viewport render | 6.454 | 49% |
-| gpu finish | 5.896 | 45% |
-| selection outline | 2.448 | 18% |
-| gizmos | 0.622 | 5% |
-| present (swap) | 0.378 | 3% |
-| ui build (panels) | 0.203 | 2% |
-| ui draw | 0.053 | 0% |
-| path trace | 0.053 | 0% |
-| ui build (overlays) | 0.029 | 0% |
-| input+tools | 0.025 | 0% |
+| viewport render | 16.631 | 69% |
+| gpu finish | 5.699 | 24% |
+| selection outline | 5.640 | 23% |
+| gizmos | 1.899 | 8% |
+| present (swap) | 0.754 | 3% |
+| ui build (panels) | 0.424 | 2% |
+| ui draw | 0.129 | 1% |
+| path trace | 0.098 | 0% |
+| ui build (overlays) | 0.078 | 0% |
+| input+tools | 0.067 | 0% |
 
 Per frame: draw calls 2013, triangles drawn 123888, objects 1000
 
-GPU time for the viewport (GL timer queries): 4.841 ms/frame
+GPU time for the viewport (GL timer queries): 4.919 ms/frame
 
 ### 3. Dense mesh idle (262k tris), selected
 
-**9.38 ms/frame (107 fps)** over 90 frames
+**10.39 ms/frame (96 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| gpu finish | 8.591 | 92% |
-| present (swap) | 0.385 | 4% |
-| viewport render | 0.198 | 2% |
-| ui build (panels) | 0.069 | 1% |
-| selection outline | 0.048 | 1% |
-| ui draw | 0.047 | 1% |
-| path trace | 0.025 | 0% |
-| ui build (overlays) | 0.011 | 0% |
-| input+tools | 0.006 | 0% |
+| gpu finish | 9.085 | 87% |
+| present (swap) | 0.607 | 6% |
+| viewport render | 0.325 | 3% |
+| ui build (panels) | 0.138 | 1% |
+| selection outline | 0.101 | 1% |
+| ui draw | 0.092 | 1% |
+| path trace | 0.059 | 1% |
+| ui build (overlays) | 0.021 | 0% |
+| input+tools | 0.007 | 0% |
 
 Per frame: draw calls 14, triangles drawn 261120, objects 1
 
-GPU time for the viewport (GL timer queries): 6.053 ms/frame
+GPU time for the viewport (GL timer queries): 6.874 ms/frame
 
 ### 4. Dense mesh idle (262k tris), not selected
 
-**7.04 ms/frame (142 fps)** over 90 frames
+**8.35 ms/frame (120 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| gpu finish | 6.306 | 90% |
-| present (swap) | 0.392 | 6% |
-| viewport render | 0.163 | 2% |
-| ui build (panels) | 0.054 | 1% |
-| ui draw | 0.050 | 1% |
-| path trace | 0.028 | 0% |
-| ui build (overlays) | 0.008 | 0% |
+| gpu finish | 7.363 | 88% |
+| present (swap) | 0.528 | 6% |
+| viewport render | 0.196 | 2% |
+| ui build (panels) | 0.085 | 1% |
+| ui draw | 0.060 | 1% |
+| path trace | 0.042 | 0% |
+| ui build (overlays) | 0.016 | 0% |
 
 Per frame: draw calls 12, triangles drawn 261120, objects 1
 
-GPU time for the viewport (GL timer queries): 3.743 ms/frame
+GPU time for the viewport (GL timer queries): 5.333 ms/frame
 
 ### 5. Dense mesh, edit-mode vertex drag every frame
 
-**32.47 ms/frame (31 fps)** over 90 frames
+**44.84 ms/frame (22 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| viewport render | 18.788 | 58% |
-| mesh rebuild+upload | 12.352 | 38% |
-| gpu finish | 11.404 | 35% |
-| edit overlay | 6.268 | 19% |
-| overlay upload | 1.659 | 5% |
-| input+tools | 0.458 | 1% |
-| ui build (overlays) | 0.440 | 1% |
-| present (swap) | 0.427 | 1% |
-| path trace | 0.373 | 1% |
-| ui build (panels) | 0.260 | 1% |
+| viewport render | 29.864 | 67% |
+| mesh rebuild+upload | 18.783 | 42% |
+| gpu finish | 11.427 | 25% |
+| edit overlay | 10.854 | 24% |
+| overlay upload | 1.967 | 4% |
+| path trace | 0.815 | 2% |
+| input+tools | 0.765 | 2% |
+| ui build (overlays) | 0.697 | 2% |
+| present (swap) | 0.512 | 1% |
+| ui build (panels) | 0.390 | 1% |
 
 Per frame: mesh uploads 1, uploaded vertices 132602, draw calls 14, triangles drawn 261120, objects 1
 
-GPU time for the viewport (GL timer queries): 9.704 ms/frame
+GPU time for the viewport (GL timer queries): 10.906 ms/frame
 
 ### 6. Skinned mesh idle (49k tris, 2 bones)
 
-**2.34 ms/frame (428 fps)** over 90 frames
+**3.20 ms/frame (312 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| gpu finish | 1.696 | 73% |
-| present (swap) | 0.302 | 13% |
-| viewport render | 0.161 | 7% |
-| ui build (panels) | 0.061 | 3% |
-| ui draw | 0.043 | 2% |
-| path trace | 0.027 | 1% |
-| ui build (overlays) | 0.012 | 1% |
-| gizmos | 0.011 | 0% |
+| gpu finish | 2.261 | 71% |
+| present (swap) | 0.437 | 14% |
+| viewport render | 0.233 | 7% |
+| ui build (panels) | 0.090 | 3% |
+| ui draw | 0.061 | 2% |
+| path trace | 0.052 | 2% |
+| ui build (overlays) | 0.021 | 1% |
+| gizmos | 0.015 | 0% |
+| input+tools | 0.008 | 0% |
 
 Per frame: draw calls 13, triangles drawn 49152, objects 3
 
-GPU time for the viewport (GL timer queries): 0.647 ms/frame
+GPU time for the viewport (GL timer queries): 1.102 ms/frame
 
 ### 7. Skinned mesh, posing a bone every frame
 
-**6.31 ms/frame (159 fps)** over 90 frames
+**8.45 ms/frame (118 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| viewport render | 3.831 | 61% |
-| mesh rebuild+upload | 3.448 | 55% |
-| gpu finish | 1.957 | 31% |
-| present (swap) | 0.307 | 5% |
-| skinning (CPU) | 0.194 | 3% |
-| ui build (panels) | 0.064 | 1% |
-| path trace | 0.051 | 1% |
-| ui draw | 0.046 | 1% |
-| gizmos | 0.012 | 0% |
-| ui build (overlays) | 0.012 | 0% |
+| viewport render | 5.542 | 66% |
+| mesh rebuild+upload | 4.983 | 59% |
+| gpu finish | 2.201 | 26% |
+| present (swap) | 0.433 | 5% |
+| skinning (CPU) | 0.308 | 4% |
+| ui build (panels) | 0.087 | 1% |
+| path trace | 0.067 | 1% |
+| ui draw | 0.059 | 1% |
+| ui build (overlays) | 0.019 | 0% |
+| gizmos | 0.016 | 0% |
 
 Per frame: mesh uploads 1, uploaded vertices 27237, draw calls 13, triangles drawn 49152, objects 3
 
-GPU time for the viewport (GL timer queries): 1.131 ms/frame
+GPU time for the viewport (GL timer queries): 1.358 ms/frame
 
 ### 8. Particles: 10 emitters, ~50k live
 
-**5.40 ms/frame (185 fps)** over 90 frames
+**5.83 ms/frame (171 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| gpu finish | 3.854 | 71% |
-| viewport render | 0.889 | 16% |
-| particle draw | 0.738 | 14% |
-| present (swap) | 0.338 | 6% |
-| ui draw | 0.089 | 2% |
-| particle sim | 0.066 | 1% |
-| ui build (panels) | 0.060 | 1% |
-| path trace | 0.051 | 1% |
-| gizmos | 0.026 | 0% |
-| ui build (overlays) | 0.009 | 0% |
+| gpu finish | 3.621 | 62% |
+| viewport render | 1.350 | 23% |
+| particle draw | 1.129 | 19% |
+| present (swap) | 0.439 | 8% |
+| ui draw | 0.107 | 2% |
+| particle sim | 0.093 | 2% |
+| ui build (panels) | 0.078 | 1% |
+| path trace | 0.075 | 1% |
+| gizmos | 0.053 | 1% |
+| ui build (overlays) | 0.014 | 0% |
 
 Per frame: draw calls 13, objects 10
 
-GPU time for the viewport (GL timer queries): 3.733 ms/frame
+GPU time for the viewport (GL timer queries): 3.617 ms/frame
 
 ### 9. Lit view: dense mesh + 8 point lights
 
-**12.90 ms/frame (78 fps)** over 90 frames
+**14.30 ms/frame (70 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| gpu finish | 11.798 | 91% |
-| present (swap) | 0.557 | 4% |
-| viewport render | 0.307 | 2% |
-| ui build (panels) | 0.085 | 1% |
-| selection outline | 0.072 | 1% |
-| ui draw | 0.056 | 0% |
-| path trace | 0.031 | 0% |
-| gizmos | 0.026 | 0% |
-| ui build (overlays) | 0.016 | 0% |
-| particle draw | 0.012 | 0% |
+| gpu finish | 13.083 | 91% |
+| present (swap) | 0.500 | 3% |
+| viewport render | 0.394 | 3% |
+| ui build (panels) | 0.120 | 1% |
+| selection outline | 0.095 | 1% |
+| ui draw | 0.076 | 1% |
+| path trace | 0.057 | 0% |
+| gizmos | 0.036 | 0% |
+| ui build (overlays) | 0.019 | 0% |
+| particle draw | 0.017 | 0% |
 
 Per frame: draw calls 16, triangles drawn 261120, objects 9
 
-GPU time for the viewport (GL timer queries): 9.038 ms/frame
+GPU time for the viewport (GL timer queries): 10.838 ms/frame
 
 ### 10. Picking: 50 click-selects per frame, 1000 objects
 
-**18.74 ms/frame (53 fps)** over 90 frames
+**29.53 ms/frame (34 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| picking (50 rays) | 10.680 | 57% |
-| viewport render | 4.093 | 22% |
-| gpu finish | 3.141 | 17% |
-| gizmos | 0.738 | 4% |
-| present (swap) | 0.382 | 2% |
-| path trace | 0.125 | 1% |
-| ui build (panels) | 0.114 | 1% |
-| ui draw | 0.052 | 0% |
-| ui build (overlays) | 0.010 | 0% |
+| picking (50 rays) | 17.851 | 60% |
+| viewport render | 7.296 | 25% |
+| gpu finish | 3.242 | 11% |
+| gizmos | 1.274 | 4% |
+| present (swap) | 0.505 | 2% |
+| ui build (panels) | 0.183 | 1% |
+| path trace | 0.158 | 1% |
+| ui draw | 0.073 | 0% |
+| ui build (overlays) | 0.015 | 0% |
+| input+tools | 0.006 | 0% |
 
 Per frame: draw calls 1012, triangles drawn 123888, objects 1000
 
-GPU time for the viewport (GL timer queries): 2.342 ms/frame
+GPU time for the viewport (GL timer queries): 2.523 ms/frame
 
 ### 11. Gizmo drag: rotating 200 objects with the Rotate handle
 
-**5.38 ms/frame (186 fps)** over 90 frames
+**6.28 ms/frame (159 fps)** over 90 frames
 
 | Section | ms/frame | share |
 |---|---:|---:|
-| gpu finish | 3.051 | 57% |
-| viewport render | 1.648 | 31% |
-| selection outline | 0.606 | 11% |
-| present (swap) | 0.348 | 6% |
-| gizmos | 0.155 | 3% |
-| ui build (panels) | 0.114 | 2% |
-| ui draw | 0.062 | 1% |
-| path trace | 0.056 | 1% |
-| ui build (overlays) | 0.011 | 0% |
-| input+tools | 0.006 | 0% |
+| gpu finish | 2.821 | 45% |
+| viewport render | 2.636 | 42% |
+| selection outline | 0.856 | 14% |
+| present (swap) | 0.398 | 6% |
+| gizmos | 0.257 | 4% |
+| ui build (panels) | 0.162 | 3% |
+| ui draw | 0.073 | 1% |
+| path trace | 0.066 | 1% |
+| ui build (overlays) | 0.016 | 0% |
+| input+tools | 0.008 | 0% |
 
 Per frame: draw calls 413, triangles drawn 24732, objects 200
 
-GPU time for the viewport (GL timer queries): 1.823 ms/frame
+GPU time for the viewport (GL timer queries): 1.958 ms/frame
 
 ## One-shot operations
 
 | Operation | ms |
 |---|---:|
-| Catmull-Clark (32k faces -> 131k quads) | 34.0 |
-| buildRenderMesh, smooth (262k tris) | 13.0 |
-| uniqueEdges (131k quads) | 23.2 |
-| Smart UV unwrap (131k quads) | 42.5 |
-| Pack UV islands (131k quads) | 41.3 |
-| Raycast 100 rays vs 262k tris | 144.7 |
-| Undo snapshot (scene with 131k-quad mesh) | 14.5 |
-| Save .m3d (131k quads) | 195.5 |
-| Load .m3d (131k quads) | 150.7 |
-| Export OBJ (131k quads) | 734.5 |
-| Import OBJ (131k quads) | 655.4 |
-| Bind + automatic weights (24k quads, 20 bones) | 1.2 |
-| CPU skinning x10 (24k quads, 20 bones) | 1.9 |
-| Boolean difference (sphere 64x32 - cylinder 64) + clean-up | 222.6 |
+| Catmull-Clark (32k faces -> 131k quads) | 56.7 |
+| buildRenderMesh, smooth (262k tris) | 22.8 |
+| uniqueEdges (131k quads) | 43.4 |
+| Smart UV unwrap (131k quads) | 89.0 |
+| Pack UV islands (131k quads) | 72.8 |
+| Raycast 100 rays vs 262k tris (brute force) | 254.9 |
+| Picking BVH build (262k tris, once per edit) | 80.1 |
+| Raycast 100 rays vs 262k tris (picking BVH) | 0.1 |
+| Undo snapshot (scene with 131k-quad mesh) | 23.2 |
+| Save .m3d (131k quads) | 142.3 |
+| Load .m3d (131k quads) | 367.3 |
+| Export OBJ (131k quads) | 233.7 |
+| Import OBJ (131k quads) | 269.0 |
+| Bind + automatic weights (24k quads, 20 bones) | 2.5 |
+| CPU skinning x10 (24k quads, 20 bones) | 4.6 |
+| Boolean difference (sphere 64x32 - cylinder 64) + clean-up | 560.1 |
 
 ## Multithreading (job system, 1 vs 12 threads)
 
@@ -253,18 +258,18 @@ Best of 3 runs each.
 
 | Operation | 1 thread ms | 12 threads ms | speed-up |
 |---|---:|---:|---:|
-| CPU skinning x10 (24k quads, 20 bones) | 2.9 | 2.0 | 1.44x |
-| Automatic weights (24k quads, 20 bones) | 4.3 | 1.2 | 3.48x |
-| buildRenderMesh, smooth (262k tris) | 11.3 | 8.9 | 1.27x |
-| Path-tracer scene build + BVH (262k tris) | 108.3 | 60.8 | 1.78x |
+| CPU skinning x10 (24k quads, 20 bones) | 6.9 | 3.8 | 1.82x |
+| Automatic weights (24k quads, 20 bones) | 8.0 | 1.8 | 4.54x |
+| buildRenderMesh, smooth (262k tris) | 21.4 | 19.2 | 1.11x |
+| Path-tracer scene build + BVH (262k tris) | 220.4 | 120.2 | 1.83x |
 
 ## Path tracing (320x200, 16 samples/pixel, 4644 triangles, max 4 bounces)
 
 | Device | ms | Msamples/s |
 |---|---:|---:|
-| CPU, 1 thread | 1134 | 0.90 |
-| CPU, 12 threads | 225 | 4.55 |
-| GPU (Intel(R) Iris(R) Xe Graphics) | 31 | 32.76 |
+| CPU, 1 thread | 2543 | 0.40 |
+| CPU, 12 threads | 440 | 2.32 |
+| GPU (Intel(R) Iris(R) Xe Graphics) | 81 | 12.70 |
 
-GPU data uploaded for tracing: 0.56 MB (triangles, BVH, materials as RGBA32F textures) in 3.4 ms. GPU time per frame while tracing (timer queries): 9.1 ms of a 30 ms budget.
+GPU data uploaded for tracing: 0.88 MB (triangles, BVH, materials as RGBA32F textures) in 8.7 ms. GPU time per frame while tracing (timer queries): 16.7 ms of a 30 ms budget.
 BVH of the 262k-triangle mesh: 157103 nodes.

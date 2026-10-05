@@ -84,6 +84,9 @@ public:
     bool selectable(uint32_t id, const Rect& r, const std::string& label, bool selected, bool active);
     bool swatch(uint32_t id, const Rect& r, Color c, bool selected);
     // Drag horizontally to change; click (without dragging) to type a value.
+    // Typing starts with the whole value selected, accepts arithmetic
+    // ("2*3", "+=0.5", see expr.h), Enter / clicking away commits, Esc
+    // cancels and Tab commits and moves to the next field.
     bool dragFloat(uint32_t id, const Rect& r, float& value, float speed, Color accent, float lo = -1e9f,
                    float hi = 1e9f);
     // Returns true when the user commits an edit (Enter or clicking away).
@@ -103,6 +106,8 @@ private:
     float mx() const { return in_->mouseX; }
     float my() const { return in_->mouseY; }
     void editKeys(std::string& buf, bool numeric);
+    void beginEdit(uint32_t id, const std::string& text);
+    void drawEditText(const Rect& r, Color border, Color textColor);
 
     const Input* in_ = nullptr;
     std::vector<Vertex> verts_;
@@ -114,6 +119,11 @@ private:
     uint32_t editId_ = 0;    // widget holding the keyboard
     bool activeSeen_ = false, editSeen_ = false, keyboardUsed_ = false;
     std::string editBuf_;
+    int editCaret_ = 0;           // caret position in editBuf_
+    bool editAllSelected_ = false;  // typing replaces the whole text
+    bool editJustOpened_ = false;   // opened by Tab this frame: ignore this frame's keys
+    uint32_t prevFieldId_ = 0;      // previous dragFloat drawn this frame (Tab order)
+    uint32_t tabFromId_ = 0;        // field that was left with Tab this frame
     float dragStartX_ = 0, dragStartValue_ = 0;
     bool dragMoved_ = false;
 };

@@ -68,6 +68,8 @@ struct Vec4 {
     Vec4(Vec3 v, float w_) : x(v.x), y(v.y), z(v.z), w(w_) {}
     Vec3 xyz() const { return {x, y, z}; }
 };
+inline Vec4 operator+(Vec4 a, Vec4 b) { return {a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w}; }
+inline Vec4 operator*(Vec4 a, float s) { return {a.x * s, a.y * s, a.z * s, a.w * s}; }
 
 // ---------------------------------------------------------------------------
 // 4x4 matrix, column-major. Element (row r, column c) lives at m[c * 4 + r].

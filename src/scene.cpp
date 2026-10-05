@@ -1,5 +1,7 @@
 #include "scene.h"
 
+#include <unordered_set>
+
 #include "skin.h"
 
 #include <algorithm>
@@ -27,12 +29,72 @@ std::string sanitize(const std::string& s) {
     return r.empty() ? std::string("object") : r;
 }
 
-const char* kKindNames[] = {"mesh", "light", "empty", "bone", "emitter"};
+const char* kKindNames[] = {"mesh", "light", "empty", "bone", "emitter", "camera"};
 }  // namespace
 
 const char* kindName(ObjectKind k) {
-    static const char* names[] = {"Mesh", "Light", "Empty", "Bone", "Emitter"};
+    static const char* names[] = {"Mesh", "Light", "Empty", "Bone", "Emitter", "Camera"};
     return names[(int)k];
+}
+
+// Tanner Helland's fit of the black-body (Planckian) locus in sRGB, then
+// converted to linear RGB and normalised to a brightest channel of 1.
+Vec3 kelvinToRGB(float kelvin) {
+    const double t = std::max(1000.0, std::min(40000.0, (double)kelvin)) / 100.0;
+    double r, g, b;
+    if (t <= 66) {
+        r = 255;
+        g = 99.4708025861 * std::log(t) - 161.1195681661;
+        b = t <= 19 ? 0 : 138.5177312231 * std::log(t - 10) - 305.0447927307;
+    } else {
+        r = 329.698727446 * std::pow(t - 60, -0.1332047592);
+        g = 288.1221695283 * std::pow(t - 60, -0.0755148492);
+        b = 255;
+    }
+    auto lin = [](double v) { return (float)std::pow(std::max(0.0, std::min(255.0, v)) / 255.0, 2.2); };
+    Vec3 c(lin(r), lin(g), lin(b));
+    float m = std::max(c.x, std::max(c.y, c.z));
+    return m > 0 ? c / m : Vec3(1, 1, 1);
+}
+
+Vec3 LightSettings::finalColor() const { return useTemperature ? mul(color, kelvinToRGB(temperature)) : color; }
+
+float PhysicalCamera::verticalFovDeg(float aspect) const {
+    // The sensor width spans the horizontal field of view.
+    float tanHalfH = std::max(1e-3f, sensorWidth) / (2.0f * std::max(1.0f, focalLength));
+    return toDegrees(2.0f * std::atan(tanHalfH / std::max(1e-3f, aspect)));
+}
+
+float PhysicalCamera::exposure() const {
+    // Photographic exposure H ~ ISO * t / N^2, relative to f/8, 1/125 s, ISO 100.
+    const float n = std::max(0.5f, fStop);
+    return (iso / 100.0f) * (shutter * 125.0f) * (64.0f / (n * n)) * std::pow(2.0f, exposureComp);
+}
+
+const char* texSlotName(int slot) {
+    static const char* names[TEX_COUNT] = {"base", "normal", "roughness", "metallic", "ao", "emission", "opacity"};
+    return names[slot];
+}
+
+const char* texSlotLabel(int slot) {
+    static const char* names[TEX_COUNT] = {"Color", "Normal", "Rough", "Metal", "AO", "Emit", "Alpha"};
+    return names[slot];
+}
+
+bool Object::hasTextures() const {
+    for (const std::string& t : textures)
+        if (!t.empty()) return true;
+    return false;
+}
+
+int Scene::renderCameraIndex() const {
+    if (renderCamera) {
+        int i = indexOf(renderCamera);
+        if (i >= 0 && objects[i].kind == ObjectKind::Camera) return i;
+    }
+    for (int i = 0; i < (int)objects.size(); ++i)
+        if (objects[i].kind == ObjectKind::Camera) return i;
+    return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +252,7 @@ std::vector<int> Scene::descendants(int i) const {
     return out;
 }
 
-int pickObject(const Scene& scene, Vec3 origin, Vec3 dir, float* tOut) {
+int pickObject(const Scene& scene, Vec3 origin, Vec3 dir, float* tOut, const LocalRaycast& localRaycast) {
     int best = -1;
     float bestT = 1e30f;
     std::vector<Vec3> scratch;
@@ -208,7 +270,8 @@ int pickObject(const Scene& scene, Vec3 origin, Vec3 dir, float* tOut) {
             Vec3 lo2 = transformPoint(inv, origin), ld = transformDir(inv, dir);
             if (!rayHitsBox(lo2, ld, lo, hi, bestT)) continue;
             float t;
-            if (raycastMesh(o.mesh, o.mesh.verts, lo2, ld, t) && t < bestT) {
+            bool hit = localRaycast ? localRaycast(i, lo2, ld, t) : raycastMesh(o.mesh, o.mesh.verts, lo2, ld, t);
+            if (hit && t < bestT) {
                 bestT = t;
                 best = i;
             }
@@ -238,6 +301,21 @@ int pickObject(const Scene& scene, Vec3 origin, Vec3 dir, float* tOut) {
 // floats), one fwrite / one fread.
 // ---------------------------------------------------------------------------
 namespace {
+// Texture paths are stored relative to the scene file when they live below it.
+std::string dirOf(const std::string& path) {
+    size_t s = path.find_last_of("/\\");
+    return s == std::string::npos ? std::string() : path.substr(0, s + 1);
+}
+bool isAbsolutePath(const std::string& p) {
+    return !p.empty() && (p[0] == '/' || p[0] == '\\' || (p.size() > 1 && p[1] == ':'));
+}
+std::string relativeTo(const std::string& dir, const std::string& path) {
+    if (!dir.empty() && path.size() > dir.size() && path.compare(0, dir.size(), dir) == 0) return path.substr(dir.size());
+    return path;
+}
+std::string resolveFrom(const std::string& dir, const std::string& file) {
+    return file.empty() || isAbsolutePath(file) ? file : dir + file;
+}
 
 struct TextOut {
     std::string buf;
@@ -343,12 +421,76 @@ void forEachLine(const std::string& text, Fn fn) {
     }
 }
 
+const char* const kMtlMaps[TEX_COUNT] = {"map_Kd", "norm", "map_Pr", "map_Pm", "map_ao", "map_Ke", "map_d"};
+
+// Reads Wavefront MTL materials, including the PBR extension (Pr, Pm, map_Pr,
+// map_Pm, norm) and common aliases (map_Bump / bump for normal maps).
+void loadMTL(const std::string& path, std::unordered_map<std::string, Object>& out) {
+    std::string text;
+    if (!readFile(path, text)) return;
+    const std::string dir = dirOf(path);
+    Object* cur = nullptr;
+    bool roughnessSet = false;
+    forEachLine(text, [&](Cursor& c) -> bool {
+        std::string_view key = c.word();
+        if (key == "newmtl") {
+            cur = &out[c.rest()];
+            roughnessSet = false;
+            return true;
+        }
+        if (!cur) return true;
+        if (key == "Kd") {
+            c.v3(cur->color);
+        } else if (key == "Ke") {
+            Vec3 e;
+            if (c.v3(e)) {
+                float m = std::max(e.x, std::max(e.y, e.z));
+                if (m > 0) {
+                    cur->emission = e / m;
+                    cur->emissionStrength = m;
+                }
+            }
+        } else if (key == "Ns" && !roughnessSet) {
+            float ns = 0;
+            if (c.f(ns)) cur->roughness = clampf(1.0f - (ns - 8.0f) / 120.0f, 0.0f, 1.0f);
+        } else if (key == "Pr") {
+            roughnessSet = c.f(cur->roughness);
+        } else if (key == "Pm") {
+            c.f(cur->metallic);
+        } else if (key == "d") {
+            c.f(cur->opacity);
+        } else if (key == "Tr") {
+            float tr = 0;
+            if (c.f(tr)) cur->opacity = 1.0f - tr;
+        } else if (key == "Ni") {
+            c.f(cur->ior);
+        } else if (key == "Tf") {
+            Vec3 tf;
+            if (c.v3(tf)) cur->transmission = clampf(1.0f - (tf.x + tf.y + tf.z) / 3.0f, 0.0f, 1.0f);
+        } else {
+            int slot = -1;
+            for (int t = 0; t < TEX_COUNT; ++t)
+                if (key == kMtlMaps[t]) slot = t;
+            if (key == "map_Bump" || key == "bump" || key == "map_bump" || key == "map_Kn") slot = TEX_NORMAL;
+            if (slot < 0) return true;
+            // Options such as "-bm 1.0" may precede the file name: keep the last word.
+            std::string rest = c.rest();
+            size_t sp = rest.find_last_of(' ');
+            std::string file = sp == std::string::npos ? rest : rest.substr(sp + 1);
+            if (!file.empty()) cur->textures[slot] = resolveFrom(dir, file);
+        }
+        return true;
+    });
+}
+
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
 // Native format
 // ---------------------------------------------------------------------------
 bool saveScene(const Scene& scene, const std::string& path, std::string& err) {
+    const std::string sceneDir = dirOf(path);
     std::unordered_map<uint32_t, int> fileIndex;
     for (int i = 0; i < (int)scene.objects.size(); ++i) fileIndex[scene.objects[i].id] = i;
     auto idx = [&](uint32_t id) {
@@ -380,14 +522,30 @@ bool saveScene(const Scene& scene, const std::string& path, std::string& err) {
         out.nums({o.color.x, o.color.y, o.color.z});
         out.raw("\nemission");
         out.nums({o.emission.x, o.emission.y, o.emission.z, o.emissionStrength});
-        out.raw("\ngloss");
-        out.nums({o.gloss});
+        out.raw("\nroughness");
+        out.nums({o.roughness});
+        out.raw("\nmaterial");
+        out.nums({o.metallic, o.opacity, o.transmission, o.ior, o.normalStrength, o.uvScale.x, o.uvScale.y});
         out.raw("\nsmooth ");
         out.num(o.smooth ? 1 : 0);
         const LightSettings& L = o.light;
         out.raw("\nlight ");
         out.num((int)L.type);
-        out.nums({L.color.x, L.color.y, L.color.z, L.intensity, L.range, L.spotAngle, L.spotBlend});
+        out.nums({L.color.x, L.color.y, L.color.z, L.intensity, L.range, L.spotAngle, L.spotBlend, L.width, L.height,
+                  L.useTemperature ? 1.0f : 0.0f, L.temperature});
+        if (o.kind == ObjectKind::Camera) {
+            const PhysicalCamera& C = o.camera;
+            out.raw("\ncamera");
+            out.nums({C.focalLength, C.sensorWidth, C.fStop, C.focusDistance, C.iso, C.shutter, C.exposureComp,
+                      (float)C.blades, C.depthOfField ? 1.0f : 0.0f});
+        }
+        for (int t = 0; t < TEX_COUNT; ++t) {
+            if (o.textures[t].empty()) continue;
+            out.raw("\ntexture ");
+            out.raw(texSlotName(t));
+            out.ch(' ');
+            out.str(relativeTo(sceneDir, o.textures[t]));
+        }
         out.raw("\nbone");
         out.nums({o.boneLength});
         out.ch('\n');
@@ -468,6 +626,7 @@ bool saveScene(const Scene& scene, const std::string& path, std::string& err) {
 }
 
 bool loadScene(Scene& scene, const std::string& path, std::string& err) {
+    const std::string sceneDir = dirOf(path);
     std::string text;
     if (!readFile(path, text)) {
         err = "Cannot open '" + path + "'";
@@ -532,7 +691,7 @@ bool loadScene(Scene& scene, const std::string& path, std::string& err) {
             for (int k = 0; k < 4; ++k) c.i(w.bone[k]) && c.f(w.w[k]);
         } else if (key == "kind") {
             std::string_view k = c.word();
-            for (int i = 0; i < 5; ++i)
+            for (int i = 0; i < kObjectKindCount; ++i)
                 if (k == kKindNames[i]) cur->kind = (ObjectKind)i;
         } else if (key == "parent") {
             c.i(parentIdx.back());
@@ -545,8 +704,27 @@ bool loadScene(Scene& scene, const std::string& path, std::string& err) {
             else cur->color = v;
         } else if (key == "emission") {
             c.v3(cur->emission) && c.f(cur->emissionStrength);
-        } else if (key == "gloss") {
-            c.f(cur->gloss);
+        } else if (key == "gloss") {  // files before PBR materials
+            float g = 0.5f;
+            c.f(g);
+            cur->roughness = 1.0f - g;
+        } else if (key == "roughness") {
+            c.f(cur->roughness);
+        } else if (key == "material") {
+            c.f(cur->metallic) && c.f(cur->opacity) && c.f(cur->transmission) && c.f(cur->ior) &&
+                c.f(cur->normalStrength) && c.f(cur->uvScale.x) && c.f(cur->uvScale.y);
+        } else if (key == "camera") {
+            PhysicalCamera& C = cur->camera;
+            float blades = 0, dof = 1;
+            c.f(C.focalLength) && c.f(C.sensorWidth) && c.f(C.fStop) && c.f(C.focusDistance) && c.f(C.iso) &&
+                c.f(C.shutter) && c.f(C.exposureComp) && c.f(blades) && c.f(dof);
+            C.blades = (int)blades;
+            C.depthOfField = dof != 0.0f;
+        } else if (key == "texture") {
+            std::string_view slot = c.word();
+            std::string file = c.rest();
+            for (int t = 0; t < TEX_COUNT; ++t)
+                if (slot == texSlotName(t)) cur->textures[t] = resolveFrom(sceneDir, file);
         } else if (key == "smooth") {
             int s = 1;
             c.i(s);
@@ -554,8 +732,11 @@ bool loadScene(Scene& scene, const std::string& path, std::string& err) {
         } else if (key == "light") {
             int type = 0;
             LightSettings& L = cur->light;
-            c.i(type) && c.v3(L.color) && c.f(L.intensity) && c.f(L.range) && c.f(L.spotAngle) && c.f(L.spotBlend);
-            L.type = (LightType)std::max(0, std::min(2, type));
+            float useT = 0;
+            c.i(type) && c.v3(L.color) && c.f(L.intensity) && c.f(L.range) && c.f(L.spotAngle) && c.f(L.spotBlend) &&
+                c.f(L.width) && c.f(L.height) && c.f(useT) && c.f(L.temperature);
+            L.useTemperature = useT != 0.0f;
+            L.type = (LightType)std::max(0, std::min(kLightTypeCount - 1, type));
         } else if (key == "bone") {
             c.f(cur->boneLength);
         } else if (key == "rest") {
@@ -676,8 +857,29 @@ bool exportOBJ(const Scene& scene, const std::string& path, std::string& err, in
         mtl.raw("_mat\nKa 0 0 0\nKd");
         mtl.nums({o.color.x, o.color.y, o.color.z});
         mtl.raw("\nKs 0.2 0.2 0.2\nNs");
-        mtl.nums({8.0f + o.gloss * 120.0f});
-        mtl.raw("\nd 1\nillum 2\n");
+        mtl.nums({8.0f + (1.0f - o.roughness) * 120.0f});
+        mtl.raw("\nd");
+        mtl.nums({o.opacity});
+        // PBR extension of MTL (read by Blender and many other tools).
+        mtl.raw("\nPr");
+        mtl.nums({o.roughness});
+        mtl.raw("\nPm");
+        mtl.nums({o.metallic});
+        if (o.transmission > 0) {
+            mtl.raw("\nTf");
+            mtl.nums({1.0f - o.transmission, 1.0f - o.transmission, 1.0f - o.transmission});
+            mtl.raw("\nNi");
+            mtl.nums({o.ior});
+        }
+        mtl.raw("\nillum 2\n");
+        const std::string mtlDir = dirOf(path);
+        for (int t = 0; t < TEX_COUNT; ++t) {
+            if (o.textures[t].empty()) continue;
+            mtl.raw(kMtlMaps[t]);
+            mtl.ch(' ');
+            mtl.str(relativeTo(mtlDir, o.textures[t]));
+            mtl.ch('\n');
+        }
         if (o.emissionStrength > 0) {
             mtl.raw("Ke");
             mtl.nums({o.emission.x * o.emissionStrength, o.emission.y * o.emissionStrength,
@@ -723,11 +925,15 @@ bool importOBJ(Scene& scene, const std::string& path, std::string& err, int* fir
         std::string name;
         std::vector<std::vector<int>> faces;    // global, 0-based
         std::vector<std::vector<int>> faceUVs;  // global vt indices, -1 if missing
+        std::string material;
     };
     std::vector<Vec3> verts;
     std::vector<Vec2> texcoords;
     std::vector<Group> groups(1);
     groups[0].name = baseName(path);
+    std::unordered_map<std::string, Object> materials;  // MTL name -> material fields
+    std::string currentMtl;
+    const std::string objDir = dirOf(path);
 
     auto resolve = [](int idx, int count) { return idx < 0 ? count + idx : idx - 1; };
     forEachLine(text, [&](Cursor& c) -> bool {
@@ -771,8 +977,16 @@ bool importOBJ(Scene& scene, const std::string& path, std::string& err, int* fir
             std::string name = c.rest();
             if (!name.empty()) {
                 if (groups.back().faces.empty()) groups.back().name = name;
-                else groups.push_back({name, {}, {}});
+                else groups.push_back({name, {}, {}, currentMtl});
             }
+        } else if (key == "mtllib") {
+            loadMTL(resolveFrom(objDir, c.rest()), materials);
+        } else if (key == "usemtl") {
+            currentMtl = c.rest();
+            if (!groups.back().faces.empty() && groups.back().material != currentMtl)
+                groups.push_back({groups.back().name, {}, {}, currentMtl});
+            else
+                groups.back().material = currentMtl;
         }
         return true;
     });
@@ -806,6 +1020,20 @@ bool importOBJ(Scene& scene, const std::string& path, std::string& err, int* fir
         mesh.validate();
         mesh.touch();
         int i = scene.add(std::move(mesh), g.name, {0.8f, 0.8f, 0.8f});
+        auto mt = materials.find(g.material);
+        if (mt != materials.end()) {
+            Object& o = scene.objects[i];
+            const Object& m = mt->second;
+            o.color = m.color;
+            o.emission = m.emission;
+            o.emissionStrength = m.emissionStrength;
+            o.roughness = m.roughness;
+            o.metallic = m.metallic;
+            o.opacity = m.opacity;
+            o.transmission = m.transmission;
+            o.ior = m.ior;
+            for (int t = 0; t < TEX_COUNT; ++t) o.textures[t] = m.textures[t];
+        }
         if (first < 0) first = i;
         ++added;
     }
@@ -814,5 +1042,52 @@ bool importOBJ(Scene& scene, const std::string& path, std::string& err, int* fir
         return false;
     }
     if (firstNewIndex) *firstNewIndex = first;
+    return true;
+}
+
+// Hierarchy drag & drop (outliner).
+bool moveInHierarchy(Scene& scene_, const std::vector<uint32_t>& ids, uint32_t targetId, HierarchyDrop zone) {
+    const int target = targetId ? scene_.indexOf(targetId) : -1;
+    if (zone != HierarchyDrop::Root && target < 0) return false;
+    // Only move the top-most of the dragged objects; their children follow.
+    std::vector<uint32_t> top;
+    for (uint32_t id : ids) {
+        int i = scene_.indexOf(id);
+        if (i < 0) continue;
+        bool covered = false;
+        for (uint32_t other : ids) {
+            int j = scene_.indexOf(other);
+            if (j >= 0 && j != i && scene_.isAncestor(j, i)) covered = true;
+        }
+        if (!covered) top.push_back(id);
+    }
+    if (top.empty()) return false;
+    // Refuse to drop onto / next to itself or into its own subtree.
+    for (uint32_t id : top) {
+        int i = scene_.indexOf(id);
+        if (target >= 0 && (i == target || scene_.isAncestor(i, target))) return false;
+    }
+    const uint32_t activeId = scene_.active >= 0 && scene_.active < (int)scene_.objects.size() ? scene_.objects[scene_.active].id : 0;
+    int newParent = -1;
+    if (zone == HierarchyDrop::Onto) newParent = target;
+    else if (zone == HierarchyDrop::Before || zone == HierarchyDrop::After) newParent = scene_.parentIndex(target);
+    for (uint32_t id : top) {
+        int i = scene_.indexOf(id);
+        int p = newParent >= 0 ? scene_.indexOf(scene_.objects[newParent].id) : -1;
+        if (scene_.parentIndex(i) != p && !scene_.setParent(i, p, true)) return false;
+    }
+    // Sibling order follows the object list: move the dropped objects there.
+    if (zone == HierarchyDrop::Before || zone == HierarchyDrop::After || zone == HierarchyDrop::Root) {
+        std::vector<Object> moved, rest;
+        std::unordered_set<uint32_t> set(top.begin(), top.end());
+        for (Object& o : scene_.objects) (set.count(o.id) ? moved : rest).push_back(std::move(o));
+        size_t at = rest.size();
+        if (zone != HierarchyDrop::Root)
+            for (size_t k = 0; k < rest.size(); ++k)
+                if (rest[k].id == targetId) at = zone == HierarchyDrop::Before ? k : k + 1;
+        rest.insert(rest.begin() + (long)at, std::make_move_iterator(moved.begin()), std::make_move_iterator(moved.end()));
+        scene_.objects = std::move(rest);
+    }
+    scene_.active = activeId ? scene_.indexOf(activeId) : -1;
     return true;
 }

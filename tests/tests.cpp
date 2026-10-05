@@ -2,9 +2,14 @@
 // Build with -DMODELER_BUILD_TESTS=ON and run modeler_tests.
 #include "bvh.h"
 #include "csg.h"
+#include "expr.h"
+#include "image_io.h"
+#include "image_load.h"
+#include "hwrt.h"
 #include "input_map.h"
 #include "jobs.h"
 #include "mesh.h"
+#include "meshedit.h"
 #include "parametric.h"
 #include "particles.h"
 #include "pathtracer.h"
@@ -494,7 +499,7 @@ static void testFilesV2() {
     s.objects[gear].param = defaultSpec(PS_Gear);
     s.objects[gear].emission = {1, 0.5f, 0};
     s.objects[gear].emissionStrength = 3;
-    s.objects[gear].gloss = 0.9f;
+    s.objects[gear].roughness = 0.1f;
     Object light;
     light.kind = ObjectKind::Light;
     light.name = "Lamp";
@@ -522,7 +527,7 @@ static void testFilesV2() {
     CHECK(l.objects.size() == 4);
     if (l.objects.size() == 4) {
         const Object& g = l.objects[0];
-        CHECK(g.param.shape == PS_Gear && near(g.emissionStrength, 3) && near(g.gloss, 0.9f));
+        CHECK(g.param.shape == PS_Gear && near(g.emissionStrength, 3) && near(g.roughness, 0.1f));
         CHECK(g.mesh.hasUVs() && g.mesh.uvs.size() == s.objects[0].mesh.uvs.size());
         CHECK(isSkinned(g) && g.skinBones.size() == 1 && g.skinBones[0] == l.objects[2].id);
         CHECK(l.objects[1].kind == ObjectKind::Light && l.objects[1].light.type == LightType::Spot);
@@ -658,6 +663,7 @@ static void testTransformApi() {
 }
 
 #include "tests_round5.inc"
+#include "tests_round6.inc"
 
 int main() {
     jobs::init();
@@ -680,6 +686,14 @@ int main() {
     testBvh();
     testPathTracer();
     testKeyBindings();
+    testExpressions();
+    testEdgeExtrudeAndInset();
+    testMeshAccel();
+    testHierarchyDragDrop();
+    testImageDecoding();
+    testLightsCameraMaterials();
+    testSceneFilesV3();
+    testHardwareRayTracingMatchesCpu();
     jobs::shutdown();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

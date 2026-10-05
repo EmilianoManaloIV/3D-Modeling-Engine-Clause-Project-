@@ -47,6 +47,8 @@ const ActionInfo kInfo[kActionCount] = {
     {"rotate", "Rotate", C::Global, false},
     {"scale", "Scale", C::Global, false},
     {"render", "Render", C::Global, false},
+    {"look_through_camera", "Camera view", C::Global, false},
+    {"align_camera", "Cam to view", C::Global, false},
     {"cam_forward", "Cam fwd", C::Global, true},
     {"cam_back", "Cam back", C::Global, true},
     {"cam_left", "Cam left", C::Global, true},
@@ -60,6 +62,10 @@ const ActionInfo kInfo[kActionCount] = {
     {"axis_x", "Axis X", C::Modal, false},
     {"axis_y", "Axis Y", C::Modal, false},
     {"axis_z", "Axis Z", C::Modal, false},
+    {"select_vertices", "Vertex mode", C::Edit, false},
+    {"select_edges", "Edge mode", C::Edit, false},
+    {"select_faces", "Face mode", C::Edit, false},
+    {"inset", "Inset", C::Edit, false},
 };
 
 Binding B(const char* text) {
@@ -111,6 +117,8 @@ const Default kDefaults[] = {
     {A::ModalRotate, "", "", "R", ""},
     {A::ModalScale, "", "", "S", ""},
     {A::Render, "F5", "", "F5", ""},
+    {A::LookThroughCamera, "0", "", "0", ""},
+    {A::AlignCameraToView, "C-A-0", "", "C-A-0", ""},
     {A::CameraForward, "Up", "", "", ""},
     {A::CameraBack, "Down", "", "", ""},
     {A::CameraLeft, "Left", "", "", ""},
@@ -124,6 +132,10 @@ const Default kDefaults[] = {
     {A::AxisX, "X", "", "X", ""},
     {A::AxisY, "Y", "", "Y", ""},
     {A::AxisZ, "Z", "", "Z", ""},
+    {A::SelectVertices, "1", "", "1", ""},
+    {A::SelectEdges, "2", "", "2", ""},
+    {A::SelectFaces, "3", "", "3", ""},
+    {A::Inset, "I", "", "I", ""},
 };
 
 struct NamedKey {

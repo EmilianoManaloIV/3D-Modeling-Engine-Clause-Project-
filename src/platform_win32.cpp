@@ -10,6 +10,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <windowsx.h>
+#include <commdlg.h>
+#include <shellapi.h>
 
 #include <cstdint>
 
@@ -143,6 +145,19 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_RBUTTONUP: mouseButton(MOUSE_RIGHT, false, lp); return 0;
         case WM_MBUTTONDOWN: mouseButton(MOUSE_MIDDLE, true, lp); return 0;
         case WM_MBUTTONUP: mouseButton(MOUSE_MIDDLE, false, lp); return 0;
+        case WM_DROPFILES: {
+            HDROP drop = (HDROP)wp;
+            UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+            for (UINT i = 0; i < n && g_input; ++i) {
+                wchar_t wpath[MAX_PATH * 4];
+                if (!DragQueryFileW(drop, i, wpath, MAX_PATH * 4)) continue;
+                char utf8[MAX_PATH * 8];
+                if (WideCharToMultiByte(CP_UTF8, 0, wpath, -1, utf8, sizeof utf8, nullptr, nullptr))
+                    g_input->droppedFiles.push_back(utf8);
+            }
+            DragFinish(drop);
+            return 0;
+        }
         case WM_MOUSEWHEEL:
             if (g_input) g_input->wheel += (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
             return 0;
@@ -222,6 +237,7 @@ bool init(const char* title, int width, int height, std::string& error) {
         return false;
     }
     g_hdc = GetDC(g_hwnd);
+    DragAcceptFiles(g_hwnd, TRUE);  // drop texture images / scenes onto the window
 
     // 3) Pixel format: try 4x MSAA first, then without.
     int format = 0;
@@ -319,6 +335,26 @@ void* getProcAddress(const char* name) {
 void setTitle(const std::string& title) { SetWindowTextA(g_hwnd, title.c_str()); }
 
 void showError(const std::string& message) { MessageBoxA(g_hwnd, message.c_str(), "Modeler3D", MB_ICONERROR | MB_OK); }
+
+std::string openFileDialog(const std::string& title, bool images) {
+    wchar_t file[MAX_PATH * 4] = L"";
+    wchar_t wtitle[256] = L"";
+    MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, wtitle, 256);
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof ofn;
+    ofn.hwndOwner = g_hwnd;
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH * 4;
+    ofn.lpstrTitle = wtitle;
+    ofn.lpstrFilter = images ? L"Images (*.png;*.jpg;*.jpeg;*.tga;*.bmp)\0*.png;*.jpg;*.jpeg;*.tga;*.bmp\0All files\0*.*\0"
+                             : L"All files\0*.*\0";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return "";
+    char utf8[MAX_PATH * 8];
+    if (!WideCharToMultiByte(CP_UTF8, 0, file, -1, utf8, sizeof utf8, nullptr, nullptr)) return "";
+    if (g_input) g_input->releaseAll();  // the dialog swallowed the mouse-up
+    return utf8;
+}
 
 void sleepMs(int ms) { Sleep((DWORD)ms); }
 

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <iterator>
 #include <string>
+#include <vector>
 
 // Letters and digits use their uppercase ASCII codes ('A', '7', ...).
 enum Key : int {
@@ -43,6 +44,7 @@ struct Input {
     bool keyPressed[KEY_COUNT] = {};  // first press only
     bool keyRepeat[KEY_COUNT] = {};   // first press + OS auto-repeat
     std::string text;                 // printable ASCII typed this frame
+    std::vector<std::string> droppedFiles;  // files dropped on the window this frame (UTF-8 paths)
     bool hasMouse = false;
 
     bool shift() const { return keyDown[KEY_SHIFT]; }
@@ -57,6 +59,7 @@ struct Input {
         std::fill(std::begin(keyPressed), std::end(keyPressed), false);
         std::fill(std::begin(keyRepeat), std::end(keyRepeat), false);
         text.clear();
+        droppedFiles.clear();
     }
     void onKey(int k, bool down) {
         if (k <= 0 || k >= KEY_COUNT) return;
@@ -108,4 +111,8 @@ void* getProcAddress(const char* name);
 void setTitle(const std::string& title);
 void showError(const std::string& message);
 void sleepMs(int ms);
+// Native "open file" dialog (Windows: common dialog; Linux: zenity or
+// kdialog when installed). Returns the chosen path, or "" if cancelled /
+// unavailable. `images` filters to image files.
+std::string openFileDialog(const std::string& title, bool images);
 }  // namespace platform

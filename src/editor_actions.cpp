@@ -1,11 +1,15 @@
 #include "editor_internal.h"
+#include "image_load.h"
 #include "polygon.h"
 #include "csg.h"
 #include "skin.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <cctype>
 #include <cmath>
 #include <set>
+#include <unordered_set>
 
 using namespace ed;
 
@@ -47,6 +51,12 @@ void Editor::addLight(LightType type) {
         o.light.color = {1.0f, 0.97f, 0.9f};
         o.rotation = {-35, 25, 0};
         o.position = cam_.target + Vec3(0, 6, 0);
+    } else if (type == LightType::Area) {
+        o.name = "Area Light";
+        o.light.intensity = 25.0f;
+        o.light.width = o.light.height = 2.0f;
+        o.light.color = {1.0f, 1.0f, 1.0f};
+        o.position = cam_.target + Vec3(0, 3.5f, 0);
     } else {
         o.name = "Spot Light";
         o.light.intensity = 45.0f;
@@ -166,19 +176,9 @@ void Editor::duplicateSelected() {
 }
 
 void Editor::deleteSelected() {
+    if (xf_ != Xform::None) return;
     if (mode_ == Mode::Edit) {
-        Object* o = activeMesh();
-        if (!o) return;
-        auto& sel = vertSel();
-        int count = (int)std::count(sel.begin(), sel.end(), 1);
-        if (!count) {
-            setStatus("No vertices selected", true);
-            return;
-        }
-        pushUndo();
-        deleteVertices(o->mesh, sel);
-        markDirty();
-        setStatus(strf("Deleted %d vertices", count));
+        deleteEdit();
         return;
     }
     int count = scene_.selectedCount();
@@ -268,9 +268,7 @@ void Editor::setSmoothSelected(bool smooth) {
 
 void Editor::selectAll() {
     if (mode_ == Mode::Edit) {
-        auto& sel = vertSel();
-        bool any = std::find(sel.begin(), sel.end(), 1) != sel.end();
-        std::fill(sel.begin(), sel.end(), any ? 0 : 1);
+        selectAllEdit();
         return;
     }
     bool any = scene_.selectedCount() > 0;
@@ -283,21 +281,7 @@ void Editor::extrude() {
         setStatus("Extrude works in Edit mode (Tab)", true);
         return;
     }
-    Object* o = activeMesh();
-    if (!o) return;
-    auto& sel = vertSel();
-    if (selectedFaces(o->mesh, sel).empty()) {
-        setStatus("Select all vertices of at least one face to extrude", true);
-        return;
-    }
-    pushUndo();
-    Vec3 n;
-    extrudeSelectedFaces(o->mesh, sel, &n);
-    markDirty();
-    Mat4 normalMatrix = transpose(inverse(scene_.world(scene_.active)));
-    xfCustomAxis_ = normalize(transformDir(normalMatrix, n));
-    if (beginTransform(Xform::Grab, false) && dot(xfCustomAxis_, xfCustomAxis_) > 0.5f) xfAxis_ = 3;
-    setStatus("Extruded - move the mouse, click to confirm");
+    extrudeEdit();
 }
 
 void Editor::setMode(Mode m) {
@@ -316,6 +300,8 @@ void Editor::setMode(Mode m) {
             note = " (parametric shape converted to an editable mesh - undo restores it)";
         }
         vsel_.assign(o->mesh.verts.size(), 0);
+        selTopology_ = 0;  // rebuild the edge / face selection for this mesh
+        lastOp_ = MeshOp();
         setStatus("Edit mode: select vertices, G/R/S transform, E extrude, Tab to exit" + note);
     } else {
         setStatus("Object mode");
@@ -764,13 +750,13 @@ void Editor::buildDemo(int which) {
             int ground = shape(PS_Plane, "Ground", 8, {0, 0, -1});
             setParam(ground, {14, 10, 1, 1});
             int g = shape(PS_Gear, "Gear", 4, {-3, 1.05f, 0.3f}, {90, 0, 0});
-            scene_.objects[g].gloss = 0.85f;
+            scene_.objects[g].roughness = 0.15f;
             int st = shape(PS_Stairs, "Stairs", 9, {-4.2f, 0.8f, -3.5f}, {0, 30, 0});
             (void)st;
             int sp = shape(PS_Spring, "Spring", 2, {0.2f, 1.1f, -3.0f});
             scene_.objects[sp].param.twist = 0;
             int t = shape(PS_Torus, "Torus", 6, {3.3f, 1.0f, -2.6f}, {65, 0, 0});
-            scene_.objects[t].gloss = 0.7f;
+            scene_.objects[t].roughness = 0.3f;
             int brazier = shape(PS_Pipe, "Brazier", 8, {2.6f, 0.45f, 1.0f});
             setParam(brazier, {0.6f, 0.45f, 0.9f, 32});
             Object fire;
@@ -891,7 +877,7 @@ void Editor::buildDemo(int which) {
                 o.mesh = std::move(r.mesh);
                 o.color = kPalette[p.color];
                 o.position = {p.x, 0, 0};
-                o.gloss = 0.6f;
+                o.roughness = 0.4f;
                 scene_.addObject(std::move(o));
             }
             // An unapplied pair: select "Cutter", Ctrl+click "Block", press Diff.
@@ -913,6 +899,77 @@ void Editor::buildDemo(int which) {
             cam_.pitch = 28;
             break;
         }
+        case 6: {  // materials: PBR textures, glass, metals, alpha, area light, physical camera
+            auto setTex = [&](int i, const char* set, bool ao, Vec2 tiling) {
+                Object& o = scene_.objects[i];
+                o.textures[TEX_BASE] = std::string("builtin:") + set + "_color";
+                o.textures[TEX_NORMAL] = std::string("builtin:") + set + "_normal";
+                o.textures[TEX_ROUGHNESS] = std::string("builtin:") + set + "_roughness";
+                if (ao) o.textures[TEX_AO] = std::string("builtin:") + set + "_ao";
+                o.uvScale = tiling;
+                o.color = {1, 1, 1};
+                o.roughness = 1.0f;
+            };
+            int floor = shape(PS_Plane, "Tile Floor", 0, {0, 0, 0});
+            setParam(floor, {14, 10, 1, 1});
+            setTex(floor, "tiles", false, {3, 2.2f});
+            int wall = shape(PS_Cube, "Brick Wall", 0, {0, 2.0f, -3.2f});
+            setParam(wall, {14, 4, 0.3f, 1});
+            setTex(wall, "bricks", true, {3.5f, 1});
+            int glass = shape(PS_Sphere, "Glass Ball", 0, {0, 0.8f, 0.4f});
+            setParam(glass, {0.8f, 48, 24});
+            scene_.objects[glass].color = {0.92f, 0.97f, 1.0f};
+            scene_.objects[glass].transmission = 1.0f;
+            scene_.objects[glass].roughness = 0.0f;
+            scene_.objects[glass].ior = 1.5f;
+            int gold = shape(PS_Torus, "Gold Ring", 0, {-2.4f, 0.55f, -0.6f}, {70, 20, 0});
+            setParam(gold, {0.6f, 0.2f, 48, 24});
+            scene_.objects[gold].color = {1.0f, 0.78f, 0.34f};
+            scene_.objects[gold].metallic = 1.0f;
+            scene_.objects[gold].roughness = 0.22f;
+            int steel = shape(PS_Cylinder, "Brushed Steel", 0, {2.3f, 0.7f, -0.8f});
+            setParam(steel, {0.5f, 1.4f, 48});
+            scene_.objects[steel].textures[TEX_ROUGHNESS] = "builtin:metal_roughness";
+            scene_.objects[steel].color = {0.85f, 0.86f, 0.88f};
+            scene_.objects[steel].metallic = 1.0f;
+            scene_.objects[steel].roughness = 1.0f;
+            int plastic = shape(PS_Cube, "Red Plastic", 1, {-1.0f, 0.4f, 1.6f}, {0, 25, 0});
+            setParam(plastic, {0.8f, 0.8f, 0.8f, 1});
+            scene_.objects[plastic].roughness = 0.45f;
+            int ghost = shape(PS_Cube, "See-through", 4, {1.4f, 0.45f, 1.5f}, {0, -20, 0});
+            setParam(ghost, {0.9f, 0.9f, 0.9f, 1});
+            scene_.objects[ghost].opacity = 0.35f;
+            scene_.objects[ghost].roughness = 0.2f;
+            int area = light(LightType::Area, "Area Light", {0.5f, 4.2f, 2.0f}, {-15, 0, 0}, {1, 1, 1}, 60);
+            scene_.objects[area].light.width = 3.0f;
+            scene_.objects[area].light.height = 1.5f;
+            scene_.objects[area].light.useTemperature = true;
+            scene_.objects[area].light.temperature = 3200.0f;
+            int sun = light(LightType::Sun, "Sun", {-3, 6, 3}, {-50, -30, 0}, {1, 1, 1}, 1.2f);
+            scene_.objects[sun].light.useTemperature = true;
+            scene_.objects[sun].light.temperature = 6500.0f;
+            scene_.ambient = {0.05f, 0.06f, 0.08f};
+            // A camera with a shallow depth of field, focused on the glass ball.
+            cam_.target = {0, 0.7f, 0.2f};
+            cam_.distance = 7.2f;
+            cam_.yaw = 0;
+            cam_.pitch = 14;
+            updateMatrices();
+            Object camera;
+            camera.kind = ObjectKind::Camera;
+            camera.name = "Camera";
+            alignCameraToView(camera);
+            camera.camera.focalLength = 40.0f;
+            camera.camera.fStop = 2.0f;
+            camera.camera.shutter = 1.0f / 2000.0f;
+            camera.camera.iso = 100.0f;  // f/2, 1/2000 s, ISO 100 = the reference exposure
+            camera.camera.focusDistance = length(cam_.eye() - transformPoint(Mat4(), Vec3(0, 0.8f, 0.4f)));
+            camera.camera.blades = 6;
+            scene_.addObject(camera);
+            selectOnly(glass);
+            shading_ = SHADE_LIT;
+            break;
+        }
         default: {  // default scene: a cube and a light, like most modelers
             int i = shape(PS_Cube, "Cube", 0, {0, 0, 0});
             light(LightType::Point, "Light", {2.4f, 2.6f, 1.6f}, {}, {1.0f, 0.95f, 0.85f}, 25);
@@ -920,4 +977,216 @@ void Editor::buildDemo(int which) {
             break;
         }
     }
+}
+
+// ============================================================================
+// Hierarchy drag & drop (logic in scene.cpp)
+// ============================================================================
+bool Editor::moveInHierarchy(const std::vector<uint32_t>& ids, uint32_t targetId, int zone) {
+    const uint32_t activeId = scene_.active >= 0 ? scene_.objects[scene_.active].id : 0;
+    bool ok = ::moveInHierarchy(scene_, ids, targetId, (HierarchyDrop)zone);
+    scene_.active = activeId ? scene_.indexOf(activeId) : -1;
+    return ok;
+}
+
+// ============================================================================
+// Camera objects
+// ============================================================================
+void Editor::alignCameraToView(Object& c) {
+    const Vec3 eye = cam_.eye(), fwd = camForward();
+    Vec3 right = normalize(cross(fwd, Vec3(0, 1, 0)));
+    if (length(right) < 0.5f) right = Vec3(1, 0, 0);
+    const Vec3 up = cross(right, fwd);
+    Mat4 world;  // columns: X = right, Y = up, Z = -forward (the camera looks along -Z)
+    const Vec3 cols[3] = {right, up, -fwd};
+    for (int col = 0; col < 3; ++col)
+        for (int r = 0; r < 3; ++r) world.m[col * 4 + r] = cols[col][r];
+    world.m[12] = eye.x;
+    world.m[13] = eye.y;
+    world.m[14] = eye.z;
+    int i = scene_.indexOf(c.id);
+    int p = i >= 0 ? scene_.parentIndex(i) : -1;
+    Mat4 local = p >= 0 ? inverse(scene_.world(p)) * world : world;
+    Vec3 s;
+    decomposeTRS(local, c.position, c.rotation, s);
+    c.scale = Vec3(1, 1, 1);
+    c.camera.focusDistance = cam_.distance;
+    // Match the view's field of view with the lens.
+    const float aspect = viewport_.w / std::max(1.0f, viewport_.h);
+    const float tanHalfH = std::tan(toRadians(cam_.fovY) * 0.5f) * aspect;
+    c.camera.focalLength = clampf(c.camera.sensorWidth / (2.0f * std::max(1e-4f, tanHalfH)), 4.0f, 2000.0f);
+}
+
+void Editor::addCamera() {
+    Object o;
+    o.kind = ObjectKind::Camera;
+    o.name = "Camera";
+    o.boneLength = 0.5f;
+    alignCameraToView(o);
+    int i = addObject(std::move(o), "Added");
+    if (i >= 0) setStatus("Added a camera at the current view - the Render tab renders through it");
+}
+
+void Editor::lookThroughCamera() {
+    int ci = scene_.active >= 0 && scene_.objects[scene_.active].kind == ObjectKind::Camera ? scene_.active
+                                                                                         : scene_.renderCameraIndex();
+    if (ci < 0) {
+        setStatus("No camera in the scene (Create > Camera adds one at the current view)", true);
+        return;
+    }
+    const Object& c = scene_.objects[ci];
+    const Mat4 w = scene_.world(ci);
+    const Vec3 eye = transformPoint(w, Vec3()), fwd = normalize(transformDir(w, Vec3(0, 0, -1)));
+    Camera goal = cam_;
+    goal.distance = std::max(0.05f, c.camera.focusDistance);
+    goal.target = eye + fwd * goal.distance;
+    goal.pitch = toDegrees(std::asin(clampf(-fwd.y, -1.0f, 1.0f)));
+    goal.yaw = toDegrees(std::atan2(-fwd.x, -fwd.z));
+    goal.fovY = c.camera.verticalFovDeg(viewport_.w / std::max(1.0f, viewport_.h));
+    goal.ortho = false;
+    animateCameraTo(goal);
+    setStatus("Looking through " + c.name);
+}
+
+void Editor::alignActiveCameraToView() {
+    int ci = scene_.active >= 0 && scene_.objects[scene_.active].kind == ObjectKind::Camera ? scene_.active
+                                                                                         : scene_.renderCameraIndex();
+    if (ci < 0) {
+        addCamera();
+        return;
+    }
+    pushUndo();
+    alignCameraToView(scene_.objects[ci]);
+    markDirty();
+    setStatus(scene_.objects[ci].name + " moved to the current view");
+}
+
+// ============================================================================
+// PBR textures
+// ============================================================================
+void Editor::reportTexture(const std::string& path) {
+    if (path.empty()) return;
+    auto img = textureCache().get(path);
+    if (img) setStatus(strf("Texture %dx%d: %s", img->width, img->height, path.c_str()));
+    else setStatus("Can't load texture: " + textureCache().error(path), true);
+}
+
+// Guesses the slot of a texture from its file name, the way PBR texture
+// sets are usually named (e.g. "Bricks_Color.png", "bricks_nor_gl.jpg",
+// "metal_roughness.png", "wood_AO.jpg"; packed ORM / ARM maps go to the
+// roughness, metallic and AO slots at once).
+int Editor::assignTextureByName(Object& o, const std::string& file) {
+    std::string name = file;
+    size_t slash = name.find_last_of("/\\");
+    if (slash != std::string::npos) name = name.substr(slash + 1);
+    for (char& c : name) c = (char)std::tolower((unsigned char)c);
+    size_t dot = name.find_last_of('.');
+    std::string ext = dot == std::string::npos ? "" : name.substr(dot + 1);
+    if (ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "tga" && ext != "bmp") return -1;
+    auto has = [&](std::initializer_list<const char*> words) {
+        for (const char* w : words)
+            if (name.find(w) != std::string::npos) return true;
+        return false;
+    };
+    if (has({"_orm", "_arm", "occlusionroughnessmetallic"})) {
+        o.textures[TEX_AO] = o.textures[TEX_ROUGHNESS] = o.textures[TEX_METALLIC] = file;
+        return TEX_ROUGHNESS;
+    }
+    int slot = -1;
+    if (has({"normal", "_nor", "_nrm", "_norm", "-nor", "_n."})) slot = TEX_NORMAL;
+    else if (has({"rough"})) slot = TEX_ROUGHNESS;
+    else if (has({"metal"})) slot = TEX_METALLIC;
+    else if (has({"_ao", "ambientocclusion", "ambient_occlusion", "occlusion", "-ao"})) slot = TEX_AO;
+    else if (has({"emiss", "emit", "glow"})) slot = TEX_EMISSION;
+    else if (has({"opacity", "alpha", "mask"})) slot = TEX_OPACITY;
+    else if (has({"disp", "height", "bump", "spec", "gloss", "cavity"})) return -1;  // unsupported maps
+    else if (has({"color", "colour", "albedo", "diff", "base", "_col", "basecolor"})) slot = TEX_BASE;
+    else slot = TEX_BASE;  // a plain image: use it as the colour map
+    o.textures[slot] = file;
+    if (slot == TEX_EMISSION && o.emissionStrength <= 0.0f) {
+        o.emissionStrength = 1.0f;
+        o.emission = Vec3(1, 1, 1);
+    }
+    return slot;
+}
+
+void Editor::loadPbrFolder(Object& o, const std::string& folder) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (folder.empty() || !fs::is_directory(fs::u8path(folder), ec)) {
+        setStatus("Not a folder: " + folder, true);
+        return;
+    }
+    std::vector<std::string> files;
+    for (const auto& e : fs::directory_iterator(fs::u8path(folder), ec))
+        if (e.is_regular_file(ec)) files.push_back(e.path().u8string());
+    std::sort(files.begin(), files.end());
+    pushUndo();
+    Object before = o;
+    for (std::string& t : o.textures) t.clear();
+    int count = 0;
+    std::string used;
+    for (const std::string& f : files) {
+        // Prefer OpenGL-style normal maps when a set ships both (_nor_gl / _nor_dx).
+        std::string lower = f;
+        for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+        if (lower.find("_dx") != std::string::npos && lower.find("nor") != std::string::npos) continue;
+        int slot = assignTextureByName(o, f);
+        if (slot >= 0) {
+            ++count;
+            used += std::string(used.empty() ? "" : ", ") + texSlotLabel(slot);
+        }
+    }
+    if (!count) {
+        o = before;
+        undo_.pop_back();
+        setStatus("No texture images found in " + folder, true);
+        return;
+    }
+    std::vector<std::string> paths(std::begin(o.textures), std::end(o.textures));
+    textureCache().preload(paths);
+    if (!o.mesh.hasUVs()) unwrapActive(uv::Method::Smart);
+    markDirty();
+    setStatus(strf("Loaded %d map(s): %s", count, used.c_str()));
+}
+
+void Editor::handleDroppedFiles(const std::vector<std::string>& files) {
+    std::vector<std::string> images;
+    for (const std::string& f : files) {
+        std::string lower = f;
+        for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+        if (lower.size() > 4 && (lower.compare(lower.size() - 4, 4, ".m3d") == 0)) {
+            fileField_ = f;
+            loadFile();
+            return;
+        }
+        if (lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".obj") == 0) {
+            fileField_ = f;
+            importObj();
+            return;
+        }
+        images.push_back(f);
+    }
+    Object* o = active();
+    if (!o || !o->isMesh()) {
+        setStatus("Select a mesh, then drop texture images on the window", true);
+        return;
+    }
+    pushUndo();
+    int count = 0;
+    for (const std::string& f : images) count += assignTextureByName(*o, f) >= 0;
+    if (!count) {
+        undo_.pop_back();
+        setStatus("No usable image in the dropped files (PNG, JPEG, TGA, BMP)", true);
+        return;
+    }
+    std::vector<std::string> paths(std::begin(o->textures), std::end(o->textures));
+    textureCache().preload(paths);
+    if (!o->mesh.hasUVs()) unwrapActive(uv::Method::Smart);
+    if (shading_ == SHADE_STUDIO || shading_ == SHADE_LIT) {
+    } else {
+        shading_ = SHADE_LIT;
+    }
+    markDirty();
+    setStatus(strf("Assigned %d texture map(s) to %s", count, o->name.c_str()));
 }

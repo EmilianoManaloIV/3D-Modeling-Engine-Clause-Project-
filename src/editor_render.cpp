@@ -43,7 +43,9 @@ void Editor::collectLights(FrameParams& f) {
         L.type = (int)o.light.type;
         L.pos = transformPoint(w, Vec3());
         L.dir = normalize(transformDir(w, Vec3(0, -1, 0)));
-        L.color = o.light.color * o.light.intensity;
+        L.color = o.light.finalColor() * o.light.intensity;
+        L.axisU = transformDir(w, Vec3(o.light.width * 0.5f, 0, 0));
+        L.axisV = transformDir(w, Vec3(0, 0, o.light.height * 0.5f));
         L.range = o.light.range;
         float half = toRadians(clampf(o.light.spotAngle, 1.0f, 179.0f) * 0.5f);
         L.cosOuter = std::cos(half);
@@ -92,6 +94,7 @@ void Editor::appendGizmos(std::vector<LineVertex>& lines, std::vector<ParticleVe
         Color base = o.kind == ObjectKind::Light ? kLightGizmo
                      : o.kind == ObjectKind::Bone  ? kBoneColor
                      : o.kind == ObjectKind::Emitter ? kEmitterGizmo
+                     : o.kind == ObjectKind::Camera ? Color{0.55f, 0.85f, 1.0f, 1}
                                                     : Color{0.9f, 0.9f, 0.9f, 1};
         Color c = isActive ? Color{1.0f, 0.75f, 0.35f, 1} : sel ? withAlpha(theme::selection, 0.95f) : withAlpha(base, 0.85f);
         const float k = worldPerPixel(p) * 14.0f * dpi_;  // ~constant screen size
@@ -99,10 +102,19 @@ void Editor::appendGizmos(std::vector<LineVertex>& lines, std::vector<ParticleVe
         switch (o.kind) {
             case ObjectKind::Light: {
                 Vec3 dir = normalize(transformDir(W, Vec3(0, -1, 0)));
-                Vec3 lc = o.light.color;
+                Vec3 lc = o.light.finalColor();
                 glows.push_back({p, lc.x, lc.y, lc.z, 0.9f, k * 1.6f});
-                circle(p, right, up, k * 0.6f, c);
-                if (o.light.type == LightType::Point) {
+                if (o.light.type != LightType::Area) circle(p, right, up, k * 0.6f, c);
+                if (o.light.type == LightType::Area) {
+                    // The emitting rectangle and its facing direction.
+                    Vec3 hu = transformDir(W, Vec3(o.light.width * 0.5f, 0, 0));
+                    Vec3 hv = transformDir(W, Vec3(0, 0, o.light.height * 0.5f));
+                    Vec3 q[4] = {p - hu - hv, p + hu - hv, p + hu + hv, p - hu + hv};
+                    for (int a = 0; a < 4; ++a) seg(q[a], q[(a + 1) % 4], c);
+                    seg(q[0], q[2], withAlpha(c, 0.4f));
+                    seg(q[1], q[3], withAlpha(c, 0.4f));
+                    seg(p, p + dir * (k * 3.0f), c);
+                } else if (o.light.type == LightType::Point) {
                     for (int a = 0; a < 4; ++a) {
                         float ang = kPi * 0.25f + a * kPi * 0.5f;
                         Vec3 d = right * std::cos(ang) + up * std::sin(ang);
@@ -148,6 +160,31 @@ void Editor::appendGizmos(std::vector<LineVertex>& lines, std::vector<ParticleVe
                     Vec3 d = transformDir(W, axisVector(a)) * s;
                     seg(p - d, p + d, withAlpha(isActive || sel ? c : kAxisColor[a], 0.9f));
                 }
+                break;
+            }
+            case ObjectKind::Camera: {
+                // Frustum of the physical camera (to its focus distance, capped
+                // to a readable size) plus an "up" triangle, like Blender's icon.
+                const float aspect = viewport_.w / std::max(1.0f, viewport_.h);
+                const float fov = toRadians(o.camera.verticalFovDeg(aspect));
+                const float depth = clampf(o.camera.focusDistance, k * 3.0f, k * 12.0f);
+                const float hh = std::tan(fov * 0.5f) * depth, hw = hh * aspect;
+                Vec3 fwd = normalize(transformDir(W, Vec3(0, 0, -1)));
+                Vec3 cu = normalize(transformDir(W, Vec3(0, 1, 0))), cr = normalize(cross(fwd, cu));
+                cu = cross(cr, fwd);
+                Vec3 centre = p + fwd * depth;
+                Vec3 q[4] = {centre - cr * hw - cu * hh, centre + cr * hw - cu * hh, centre + cr * hw + cu * hh,
+                             centre - cr * hw + cu * hh};
+                for (int a = 0; a < 4; ++a) {
+                    seg(p, q[a], c);
+                    seg(q[a], q[(a + 1) % 4], c);
+                }
+                Vec3 t0 = centre + cu * (hh * 1.1f) - cr * (hw * 0.3f), t1 = centre + cu * (hh * 1.1f) + cr * (hw * 0.3f);
+                Vec3 t2 = centre + cu * (hh * 1.45f);
+                seg(t0, t1, c);
+                seg(t1, t2, c);
+                seg(t2, t0, c);
+                if (scene_.renderCameraIndex() == i) circle(p, right, up, k * 0.5f, c);  // the render camera
                 break;
             }
             case ObjectKind::Emitter: {
@@ -198,9 +235,12 @@ void Editor::renderViewport() {
         }
         return evaluateMesh(scene_, i, rest, scratch_, model);
     };
-    for (int i = 0; i < count; ++i) {
+    // Opaque meshes first, then transparent ones back to front (blended
+    // without depth writes), the usual order for alpha blending.
+    std::vector<std::pair<float, int>> transparentOrder;
+    const Vec3 eye = cam_.eye();
+    auto drawOne = [&](int i) {
         const Object& o = scene_.objects[i];
-        if (!o.isMesh()) continue;
         const bool rest = mode_ == Mode::Edit && i == scene_.active;
         const int slot = shading_ == SHADE_WEIGHTS ? displayWeightSlot(o) : -1;
         const uint64_t key = meshKey(i, rest, slot);
@@ -210,10 +250,31 @@ void Editor::renderViewport() {
         mat.color = o.color;
         Vec3 e = o.emission;
         mat.emission = Vec3(std::pow(e.x, 2.2f), std::pow(e.y, 2.2f), std::pow(e.z, 2.2f)) * o.emissionStrength;
-        mat.gloss = o.gloss;
+        mat.roughness = o.roughness;
+        mat.metallic = o.metallic;
+        mat.opacity = o.opacity;
+        mat.transmission = o.transmission;
+        mat.ior = o.ior;
+        mat.normalStrength = o.normalStrength;
+        mat.uvScale = o.uvScale;
+        if (shading_ <= SHADE_LIT)
+            for (int t = 0; t < TEX_COUNT; ++t) mat.textures[t] = renderer_.texture(o.textures[t]);
         mat.highlight = (mode_ == Mode::Object && o.selected) ? (i == scene_.active ? 1.0f : 0.6f) : 0.0f;
         renderer_.drawMesh(o.id, key, o.mesh, pos, o.smooth, slot, model, mat, f);
+    };
+    for (int i = 0; i < count; ++i) {
+        const Object& o = scene_.objects[i];
+        if (!o.isMesh()) continue;
+        if (o.transparent() && shading_ <= SHADE_LIT) {
+            Vec3 lo, hi;
+            Vec3 c = o.mesh.bounds(lo, hi) ? (lo + hi) * 0.5f : Vec3();
+            transparentOrder.push_back({-length(transformPoint(scene_.world(i), c) - eye), i});
+            continue;
+        }
+        drawOne(i);
     }
+    std::sort(transparentOrder.begin(), transparentOrder.end());
+    for (const auto& t : transparentOrder) drawOne(t.second);
 
     prof::count("objects", count);
     if (showGrid_) renderer_.drawLines(grid_, f, Mat4(), true, std::max(20.0f, cam_.distance * 3.0f), cam_.target);
@@ -293,26 +354,65 @@ void Editor::renderViewport() {
             editEdges_ = uniqueEdges(o.mesh);
             editEdgesVersion_ = o.mesh.topology;
         }
+        syncEditSelection();
         uint64_t selHash = 1469598103934665603ull;
         for (char c : sel) selHash = (selHash ^ (uint8_t)c) * 1099511628211ull;
+        for (char c : fsel_) selHash = (selHash ^ (uint8_t)c) * 1099511628211ull;
+        for (const auto& e : esel_) selHash = (selHash ^ (uint64_t)(e.first * 31 + e.second)) * 1099511628211ull;
+        selHash ^= (uint64_t)selMode_ * 0x51ED27F1ull;
         const uint64_t key = (o.mesh.version * 0x9E3779B97F4A7C15ull) ^ selHash ^ ((uint64_t)o.id << 40);
         if (key != editOverlayKey_) {
+            const Color dark{0.05f, 0.05f, 0.07f, 1};
+            // Which edges are drawn as selected depends on the mode.
+            std::unordered_set<uint64_t> selEdges;
+            if (selMode_ == SelMode::Edge) {
+                for (const auto& e : esel_) selEdges.insert((uint64_t(uint32_t(e.first)) << 32) | uint32_t(e.second));
+            } else if (selMode_ == SelMode::Face) {
+                for (size_t f = 0; f < fsel_.size(); ++f) {
+                    if (!fsel_[f]) continue;
+                    const auto& face = o.mesh.faces[f];
+                    for (size_t i = 0; i < face.size(); ++i) {
+                        auto e = meshedit::makeEdge(face[i], face[(i + 1) % face.size()]);
+                        selEdges.insert((uint64_t(uint32_t(e.first)) << 32) | uint32_t(e.second));
+                    }
+                }
+            }
             editLines_.clear();
             editLines_.reserve(editEdges_.size() * 2);
             for (auto [a, b] : editEdges_) {
-                Color c = (sel[a] && sel[b]) ? theme::selection : kEdgeDark;
+                bool on = selMode_ == SelMode::Vertex ? (sel[a] && sel[b])
+                                                      : selEdges.count((uint64_t(uint32_t(a)) << 32) | uint32_t(b)) > 0;
+                Color c = on ? theme::selection : kEdgeDark;
                 editLines_.push_back({o.mesh.verts[a], c});
                 editLines_.push_back({o.mesh.verts[b], c});
             }
             editPoints_.clear();
-            editPoints_.reserve(o.mesh.verts.size());
-            for (size_t v = 0; v < o.mesh.verts.size(); ++v)
-                editPoints_.push_back({o.mesh.verts[v], sel[v] ? theme::selection : Color{0.05f, 0.05f, 0.07f, 1}});
+            editFill_.clear();
+            if (selMode_ == SelMode::Vertex) {
+                editPoints_.reserve(o.mesh.verts.size());
+                for (size_t v = 0; v < o.mesh.verts.size(); ++v)
+                    editPoints_.push_back({o.mesh.verts[v], sel[v] ? theme::selection : dark});
+            } else if (selMode_ == SelMode::Face) {
+                const Color fill = withAlpha(theme::selection, 0.28f);
+                for (size_t f = 0; f < o.mesh.faces.size(); ++f) {
+                    const auto& face = o.mesh.faces[f];
+                    const bool on = f < fsel_.size() && fsel_[f];
+                    editPoints_.push_back({faceCenter(o.mesh, face), on ? theme::selection : dark});
+                    if (!on) continue;
+                    for (size_t i = 1; i + 1 < face.size(); ++i) {
+                        editFill_.push_back({o.mesh.verts[face[0]], fill});
+                        editFill_.push_back({o.mesh.verts[face[i]], fill});
+                        editFill_.push_back({o.mesh.verts[face[i + 1]], fill});
+                    }
+                }
+            }
             editOverlayKey_ = key;
         }
         Mat4 m = scene_.world(scene_.active);
-        renderer_.drawLinesCached(0, key, editLines_, f, m, !wireframe_, false, 1.0f);
-        renderer_.drawLinesCached(1, key, editPoints_, f, m, !wireframe_, true, 3.5f * fontScale_);
+        renderer_.drawTrianglesCached(2, key, editFill_, f, m, !wireframe_);
+        renderer_.drawLinesCached(0, key, editLines_, f, m, !wireframe_, false, selMode_ == SelMode::Edge ? 2.0f : 1.0f);
+        renderer_.drawLinesCached(1, key, editPoints_, f, m, !wireframe_, true,
+                                  (selMode_ == SelMode::Face ? 2.5f : 3.5f) * fontScale_);
     }
 
     // Gizmos for lights, bones, empties and emitters (drawn on top).

@@ -24,6 +24,9 @@ set(CORE_SOURCES
     src/jobs.cpp
     src/polygon.cpp
     src/csg.cpp
+    src/expr.cpp
+    src/meshedit.cpp
+    src/image_load.cpp
     src/input_map.cpp
     src/bvh.cpp
     src/pathtracer.cpp)
@@ -37,8 +40,10 @@ set(APP_SOURCES
     src/editor_gizmo.cpp
     src/editor_bench.cpp
     src/editor_meshops.cpp
+    src/editor_editmode.cpp
     src/editor_renderview.cpp
     src/gpu_tracer.cpp
+    src/hwrt.cpp
     src/renderer.cpp
     src/ui.cpp
     src/font.cpp
@@ -67,7 +72,7 @@ else()
 endif()
 
 if(WIN32)
-    target_link_libraries(Modeler3D PRIVATE opengl32 gdi32 user32)
+    target_link_libraries(Modeler3D PRIVATE opengl32 gdi32 user32 shell32 comdlg32)
     if(MINGW)
         # Fully static: the .exe runs without any MinGW DLLs next to it.
         target_link_options(Modeler3D PRIVATE -static -static-libgcc -static-libstdc++)
@@ -87,7 +92,8 @@ else()
 endif()
 
 if(MODELER_BUILD_TESTS)
-    add_executable(modeler_tests tests/tests.cpp ${CORE_SOURCES})
+    add_executable(modeler_tests tests/tests.cpp src/image_io.cpp src/hwrt.cpp ${CORE_SOURCES})
+    target_compile_definitions(modeler_tests PRIVATE MODELER_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
     target_include_directories(modeler_tests PRIVATE src)
     target_link_libraries(modeler_tests PRIVATE Threads::Threads)
     if(MINGW)

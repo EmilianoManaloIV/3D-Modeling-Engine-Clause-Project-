@@ -22,7 +22,7 @@ struct Binding {
 
 // Contexts: two actions may share a binding only if they live in different
 // contexts (e.g. W = Move tool, but W = fly forward while RMB is held).
-enum class Context { Global, Fly, Modal };
+enum class Context { Global, Fly, Modal, Edit };  // Edit: only in Edit mode, checked before Global
 
 enum class Action {
     // Global
@@ -31,11 +31,13 @@ enum class Action {
     ViewFront, ViewBack, ViewRight, ViewLeft, ViewTop, ViewBottom, ToggleOrtho,
     ToolHand, ToolMove, ToolRotate, ToolScale, ToolUniversal, ToggleLocalGlobal, TogglePivotCenter,
     CycleShading, ToggleWireframe, ModalGrab, ModalRotate, ModalScale,
-    Render, CameraForward, CameraBack, CameraLeft, CameraRight,
+    Render, LookThroughCamera, AlignCameraToView, CameraForward, CameraBack, CameraLeft, CameraRight,
     // Fly (RMB held, Unity)
     FlyForward, FlyBack, FlyLeft, FlyRight, FlyUp, FlyDown,
     // Modal transform
     AxisX, AxisY, AxisZ,
+    // Edit mode
+    SelectVertices, SelectEdges, SelectFaces, Inset,
     Count
 };
 constexpr int kActionCount = (int)Action::Count;
