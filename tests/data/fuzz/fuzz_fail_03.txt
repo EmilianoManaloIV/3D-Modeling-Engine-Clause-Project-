@@ -1,0 +1,7 @@
+tool extrude faces
+base cone
+problem a closed mesh is no longer closed
+params 
+faces 4 7 10
+edges 0 11 1 2 1 12 3 12 4 5
+verts 2 7 10

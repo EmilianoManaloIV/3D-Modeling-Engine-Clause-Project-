@@ -100,6 +100,14 @@ public:
     // camera so they sit on top of the surface they highlight.
     void drawTrianglesCached(int slot, uint64_t key, const std::vector<LineVertex>& v, const FrameParams& f,
                              const Mat4& model, bool depthTest);
+    // Edit-mode overlay: one position buffer (re-uploaded only when `key`
+    // changes, e.g. every frame of a vertex drag) shared by index buffers of
+    // edges / points / faces (re-uploaded only when their own key changes, i.e.
+    // on selection or topology changes). A dense mesh drag then uploads 12
+    // bytes per vertex instead of a coloured copy of every edge.
+    void setEditPositions(uint64_t key, const std::vector<Vec3>& positions);
+    void drawEditElements(int slot, uint64_t key, const std::vector<uint32_t>& indices, unsigned mode, Color color,
+                          const FrameParams& f, const Mat4& model, bool depthTest, float size);
 
     // GL texture for an image file (loaded through the texture cache, mipmapped).
     // 0 if it cannot be loaded. Base color / emission maps are sRGB-decoded in the shader.
@@ -120,7 +128,51 @@ private:
         uint64_t edgeKey = ~0ull;                 // edge buffer is built lazily (only when drawn)
         uint64_t edgeTopology = ~0ull;            // edge list depends on topology only
         std::vector<std::pair<int, int>> edges;
+        // Small meshes live in the shared pool (vao/vbo/ebo stay 0): a range of
+        // vertices and indices, drawn with a base vertex.
+        bool pooled = false;
+        uint32_t vOff = 0, vCap = 0, iOff = 0, iCap = 0;
+        // Position-only refresh (same topology / smoothing / weight slot).
+        RenderMap map;
+        uint64_t topology = ~0ull;
+        bool smooth = false;
+        int weightSlot = -2;
+        size_t vertexCount = 0, renderVertexCount = 0;
     };
+    // Shared buffers for small meshes. One VAO + VBO + EBO per object cost the
+    // driver ~100 KB each (50k small objects took 5 GB and paged); now small
+    // meshes are ranges of a few big buffers.
+    struct RangeAlloc {
+        std::vector<std::pair<uint32_t, uint32_t>> free;  // (offset, size), sorted by offset
+        uint32_t capacity = 0;
+        bool alloc(uint32_t n, uint32_t& off);
+        void release(uint32_t off, uint32_t n);
+        void grow(uint32_t newCapacity);
+    };
+    struct MeshPool {
+        unsigned vao = 0, vbo = 0, ebo = 0;
+        RangeAlloc verts, indices;
+    } pool_;
+    static constexpr uint32_t kPoolMaxVerts = 16384;  // bigger meshes keep their own buffers
+    void poolGrow(bool vertices, uint32_t need);
+    void poolUpload(GpuMesh& g);
+    void poolFree(GpuMesh& g);
+    void releaseMesh(GpuMesh& g);
+    void drawGpuMesh(const GpuMesh& g);
+    void setupMeshAttribs();
+    // Edit overlay buffers
+    unsigned editVao_ = 0, editVbo_ = 0;
+    uint64_t editPosKey_ = ~0ull;
+    struct EditBatch {
+        unsigned ebo = 0;
+        uint64_t key = ~0ull;
+        int count = 0;
+    };
+    std::unordered_map<int, EditBatch> editBatches_;
+    // Per-frame state of the mesh program, set once per frame instead of per object.
+    uint64_t frameSerial_ = 1, meshFrameSerial_ = 0;
+    const FrameParams* meshFrameParams_ = nullptr;
+    unsigned boundTex_[TEX_COUNT] = {};
     struct LineBatch {
         unsigned vao = 0, vbo = 0;
         uint64_t key = ~0ull;

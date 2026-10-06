@@ -1,0 +1,7 @@
+tool bevel verts
+base plane
+problem face 4 repeats a corner
+params width 1.4018 segments 4 profile 0.0577058 clamp 1
+faces 0 21 25
+edges 0 4 1 25 2 28 3 35 7 26 7 35 12 35 14 15 17 32 20 21 25 26 27 28 31 32
+verts 6 9 10 11 17 19 21 24 36

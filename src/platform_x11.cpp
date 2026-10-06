@@ -84,6 +84,20 @@ int translateKeysym(KeySym ks) {
         case XK_Down: return KEY_DOWN;
         case XK_Home: return KEY_HOME;
         case XK_End: return KEY_END;
+        case XK_Page_Up: return KEY_PAGEUP;
+        case XK_Page_Down: return KEY_PAGEDOWN;
+        case XK_Insert: return KEY_INSERT;
+        case XK_minus: case XK_KP_Subtract: return '-';
+        case XK_equal: case XK_KP_Add: return '=';
+        case XK_bracketleft: return '[';
+        case XK_bracketright: return ']';
+        case XK_semicolon: return ';';
+        case XK_apostrophe: return '\'';
+        case XK_comma: return ',';
+        case XK_period: case XK_KP_Decimal: return '.';
+        case XK_slash: case XK_KP_Divide: return '/';
+        case XK_backslash: return '\\';
+        case XK_grave: return '`';
         case XK_Shift_L: case XK_Shift_R: return KEY_SHIFT;
         case XK_Control_L: case XK_Control_R: return KEY_CONTROL;
         case XK_Alt_L: case XK_Alt_R: case XK_Meta_L: case XK_Meta_R: return KEY_ALT;
@@ -251,6 +265,8 @@ void processEvents(Input& input) {
                 input.onMouseMove((float)ev.xbutton.x, (float)ev.xbutton.y);
                 if (ev.xbutton.button == Button4) input.wheel += 1.0f;
                 else if (ev.xbutton.button == Button5) input.wheel -= 1.0f;
+                else if (ev.xbutton.button == 6) input.wheelX -= 1.0f;  // horizontal scroll (tilt / two-finger)
+                else if (ev.xbutton.button == 7) input.wheelX += 1.0f;
                 else input.onMouseButton(translateButton(ev.xbutton.button), true);
                 break;
             case ButtonRelease:
@@ -300,7 +316,24 @@ void setTitle(const std::string& title) {
 
 void showError(const std::string& message) { std::fprintf(stderr, "Modeler3D error: %s\n", message.c_str()); }
 
+namespace {
+bool g_dialogs = true;
+}
+void setDialogsEnabled(bool on) { g_dialogs = on; }
+
+double memoryMB() {
+    // Resident set size from /proc/self/statm (pages).
+    FILE* f = std::fopen("/proc/self/statm", "r");
+    if (!f) return 0.0;
+    long size = 0, resident = 0;
+    int n = std::fscanf(f, "%ld %ld", &size, &resident);
+    std::fclose(f);
+    if (n != 2) return 0.0;
+    return (double)resident * 4096.0 / (1024.0 * 1024.0);
+}
+
 std::string openFileDialog(const std::string& title, bool images) {
+    if (!g_dialogs) return "";
     // No toolkit of our own: use zenity (GNOME) or kdialog (KDE) if present.
     std::string t = title;
     for (char& c : t)

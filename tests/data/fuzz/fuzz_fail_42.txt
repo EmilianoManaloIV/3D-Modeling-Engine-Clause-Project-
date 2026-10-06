@@ -1,0 +1,7 @@
+tool bridge faces
+base cone
+problem a closed mesh is no longer closed
+params segments 1
+faces 0 2
+edges 4 12
+verts 0 12

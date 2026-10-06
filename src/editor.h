@@ -14,6 +14,7 @@
 #include "pathtracer.h"
 #include "input_map.h"
 #include "meshedit.h"
+#include "meshtools.h"
 #include "particles.h"
 #include "platform.h"
 #include "renderer.h"
@@ -21,7 +22,9 @@
 #include "ui.h"
 #include "uv.h"
 
+#include <chrono>
 #include <deque>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -31,6 +34,8 @@ struct AppOptions {
     int demo = 0;  // 0 = default scene, 1..4 = sample scenes (for screenshots)
     bool showHelp = false;
     std::string benchmarkReport;  // non-empty: run the performance benchmark and exit
+    std::string stressReport;     // non-empty: run the stress test (editor_stress.cpp) and exit
+    std::string stressOnly;       // letters of the stress groups to run (default: all, "ABCDEFG")
     std::string configPath;       // settings file (keymap); empty = don't persist
     // --render <out.png>: path-trace the scene, save it (+ a .txt report) and exit.
     std::string renderOut;
@@ -105,12 +110,19 @@ private:
         Vec3 scale{1, 1, 1};
         Mat4 basis;  // columns = scale axes
     };
+    // Undo snapshot. Meshes are kept as shared, immutable copies: a mesh that
+    // did not change between two snapshots (same Mesh::version) is stored once,
+    // so 64 undo steps of edits to one small object don't copy a large mesh
+    // elsewhere in the scene 64 times.
     struct Snapshot {
-        std::vector<Object> objects;
-        int active;
+        std::vector<Object> objects;  // with empty meshes
+        std::vector<std::shared_ptr<const Mesh>> meshes;
+        int active = -1;
         std::vector<char> vsel;
         Vec3 ambient;
     };
+    std::unordered_map<uint32_t, std::pair<uint64_t, std::shared_ptr<const Mesh>>> meshShare_;  // id -> (version, copy)
+    size_t undoBytes() const;  // memory held by the undo / redo history (shared meshes counted once)
 
     // --- actions (editor_actions.cpp) ---
     int addObject(Object o, const char* status);
@@ -171,6 +183,24 @@ private:
     void applyLastOp();
     bool lastOpAdjustable();
     bool updateInsetModal(const Input& in);
+    // --- more mesh tools (editor_tools.cpp) ---
+    std::vector<meshedit::Edge> editEdgeList();  // selected edges (edge mode), edges of selected faces / vertices
+    void selectResult(const std::vector<int>& newFaces, const std::vector<char>& vsel);
+    bool beginMeshOp(int type);                  // pushes undo, captures the mesh and the selection
+    void bevelSelected(bool interactive);
+    void loopCutAt(bool underMouse);
+    void subdivideEdit();
+    void connectSelected();
+    void pokeSelected();
+    void bridgeSelected();
+    void fillSelected();
+    void mergeSelected(bool perGroup);
+    void pushThroughSelected();
+    void selectLoopRing(bool ring, bool underMouse, bool extend);
+    void growSelection(bool grow);
+    void joinSelected();
+    void cycleObject(int dir);
+    void lastOpPanel(PanelLayout& L);
     const MeshAccel& meshAccel(const Object& o);
     void setMode(Mode m);
     void frameSelected();
@@ -205,7 +235,7 @@ private:
     std::vector<int> transformRoots();     // selected objects without a selected ancestor
 
     // --- undo (editor.cpp) ---
-    Snapshot snapshot() const;
+    Snapshot snapshot();
     void pushUndo();
     void beginEdit(uint32_t widgetId);
     void undo();
@@ -233,6 +263,62 @@ private:
     void loadConfig();
     void saveConfig();
 
+    // --- stress test (editor_stress.cpp) ---
+    struct StressStep {
+        std::string name;
+        std::function<bool()> setup;        // false: nothing to render for this step
+        std::function<void(int)> perFrame;  // called before each measured frame
+        int frames = 0;
+        std::function<void(double first, double avg, double worst)> done;
+    };
+    struct LadderRow {
+        int tris = 0;
+        bool skipped = false, bevelOk = true;
+        double genMs = -1, firstMs = -1, idleMs = -1, dragMs = -1, bvhMs = -1, pickMs = -1, undoFirst = -1,
+               undoAgain = -1, loopSelMs = -1, bevelMs = -1, loopCutMs = -1, saveMs = -1, loadMs = -1, rtMs = -1;
+        double memMB = 0;
+    };
+    struct ObjRow {
+        int n = 0;
+        bool skipped = false;
+        double buildMs = -1, firstMs = -1, idleMs = -1, selMs = -1, rotMs = -1, dupMs = -1, undoMs = -1, delMs = -1;
+        double memMB = 0, memCreatedMB = 0, memDrawnMB = 0, memBeforeMB = 0;
+    };
+    struct ChainRow {
+        int depth = 0;
+        double buildMs = -1, firstMs = -1, idleMs = -1, worldMs = -1, allWorldsMs = -1, descMs = -1, cycleMs = -1,
+               rootsMs = -1, deleteMs = -1;
+        bool worldOk = false, descOk = false, cycleRefused = false, deleteOk = false;
+    };
+    void stressInit();
+    void stressTick();
+    void stressFinish();
+    bool stressCheck(std::string& problem);
+    Input stressInput(const Input& real, int w, int h);
+    void stressToolFuzz(int ops);
+    std::vector<StressStep> stressSteps_;
+    std::vector<LadderRow> ladder_;
+    std::vector<ObjRow> objLadder_;
+    ChainRow chains_[3];
+    std::string stressReport_, stressText_, layoutRows_, problemScratch_, stressOnly_;
+    size_t stressIndex_ = 0;
+    int stressFrame_ = -1;
+    bool stressStepActive_ = false;
+    std::vector<double> stressTimes_, fuzzFrameMs_;
+    std::chrono::steady_clock::time_point stressLast_;
+    bool stressing_ = false, fuzzInput_ = false;
+    int stressW_ = 0, stressH_ = 0;  // forced frame size (layout test)
+    int stressRealW_ = 0, stressRealH_ = 0;
+    bool layoutDone_ = false;  // the first frame's layout has run
+    uint32_t fuzzRng_ = 12345;
+    struct FuzzMouse {
+        float x = 400, y = 300;
+        bool down[3] = {};
+        int hold[3] = {};
+    } fuzzMouse_;
+    std::vector<std::string> fuzzProblems_;
+    int fuzzCommands_ = 0, stressFailures_ = 0;
+
     // --- benchmark (editor_bench.cpp) ---
     void benchmarkTick();
     void benchmarkSetup(int scenario);
@@ -249,7 +335,70 @@ private:
     int pickVertex(Vec2 p);
     int pickIcon(Vec2 p);  // lights / bones / empties / emitters
 
+    // --- workspaces, commands, palette, menus, settings (editor_commands.cpp) ---
+    // The left panel follows the modeling pipeline: one workspace per stage.
+    enum class Workspace { Model, Texture, Rig, Light, Render };
+    static constexpr int kWorkspaceCount = 5;
+    struct Command {
+        std::string id, label, category, hint;
+        int action = -1;                   // input::Action whose binding is shown (-1: none)
+        std::function<void()> run;
+        std::function<bool()> available;   // nullptr = always
+        std::function<bool()> checked;     // toggles: highlighted when on
+        std::string why;                   // shown when run while unavailable
+    };
+    void registerCommands();
+    const Command* command(const std::string& id) const;
+    bool runCommand(const std::string& id, bool fromPalette = false);
+    bool cmdButton(const char* id, const Rect& r, const char* label = nullptr);
+    std::string shortcutText(int action) const;
+    void setWorkspace(Workspace w);
+    void openPalette();
+    void buildPalette(const Input& in);
+    void buildTopBar(const Input& in);
+    void buildMenu(const Input& in);
+    void buildSettings(PanelLayout& L, const Input& in);
+    bool section(PanelLayout& L, const char* id, const char* title, bool defaultOpen = true);
+    void applyUiScale();
+    std::vector<Command> commands_;
+    std::unordered_map<std::string, int> commandIndex_;
+    std::vector<std::string> recentCommands_;
+    Workspace ws_ = Workspace::Model;
+    int wsShading_[kWorkspaceCount] = {0, 0, 0, 1, 0};  // SHADE_* per workspace (Light = Lit)
+    bool paletteOpen_ = false;
+    std::string paletteQuery_;
+    int paletteSel_ = 0;
+    float paletteScroll_ = 0;
+    Rect paletteRect_;
+    int openMenu_ = -1;  // 0 File, 1 Edit, 2 View, 3 Add
+    Rect menuRect_, menuButtons_[4], topBar_;
+    bool settingsOpen_ = false;
+    int settingsTab_ = 0;
+    std::unordered_map<uint32_t, bool> sectionOpen_;
+    int propsTab_ = 0;  // 0 object, 1 material, 2 data (light / camera / particles / bone)
+    // Settings > Input: laptop / trackpad / keyboard-only options (saved in Modeler3D.cfg).
+    struct AccessSettings {
+        bool trackpad = false;    // two-finger scroll orbits, Shift+scroll pans, pinch / Ctrl+scroll zooms
+        int uiScale = 0;          // 0 = automatic from the display DPI, else 1..6
+        bool tooltips = true;
+        bool navButtons = true;   // drag pads next to the scene gizmo (orbit / pan / zoom without buttons)
+        bool trackpadHintShown = false;
+    } access_;
+    bool flyToggle_ = false;       // fly mode switched on from the keyboard (no right button held)
+    std::string modalNumber_;      // number typed during a modal transform (G 2 Enter)
+    int navPad_ = -1;              // nav pad being dragged: 0 orbit (scene gizmo), 1 pan, 2 zoom
+    int navPadPart_ = -1;          // scene gizmo part under the press (a click on it = view axis)
+    bool navPadMoved_ = false;
+    Vec2 navPadStart_;
+    Rect navPads_[3];
+    double lastViewportClick_ = -1;
+    Vec2 lastViewportClickPos_;
+    void layoutNavPads();
+    void flyLook(float dx, float dy);
+    void flyMove(const Input& in);
+
     // --- ui (editor_ui.cpp) ---
+    void buildWorkspacePanel(PanelLayout& L, const Input& in);
     void buildLeftPanel(const Input& in);
     void buildRightPanel(const Input& in);
     void buildStatusBar();
@@ -261,6 +410,9 @@ private:
     void buildHelp();
     void buildQuitDialog();
     void objectProperties(PanelLayout& L, Object& o, const Input& in);
+    void transformProperties(PanelLayout& L, Object& o);
+    void materialProperties(PanelLayout& L, Object& o);
+    void dataProperties(PanelLayout& L, Object& o);
     bool vec3Fields(PanelLayout& L, const char* key, uint32_t salt, Vec3& v, float speed, float lo, float hi,
                     const Color* colors);
     bool floatRow(PanelLayout& L, const char* label, const char* key, uint32_t salt, float& v, float speed, float lo,
@@ -306,15 +458,27 @@ private:
     uint64_t selTopology_ = 0;              // topology the edge / face selection belongs to
     uint32_t selObject_ = 0;
     struct MeshOp {  // the last topology tool, re-run when its settings change
-        enum Type { None, Inset } type = None;
+        enum Type { None, Inset, Bevel, LoopCut, Subdivide, Bridge, PushThrough, Poke } type = None;
         uint32_t objectId = 0;
         Mesh before;
         std::vector<int> faces;
+        std::vector<meshedit::Edge> edges;
+        std::vector<int> verts;
         meshedit::InsetParams inset;
+        meshedit::BevelParams bevel;
+        meshedit::BridgeParams bridge;
+        meshedit::PushThroughParams push;
+        int cuts = 1;
+        float offset = 0.0f;   // poke height
+        bool regions = false;  // bridge: two face regions instead of edge loops
+        SelMode resultMode = SelMode::Face;
         uint64_t resultVersion = 0;
+        std::string error;
     } lastOp_;
     meshedit::InsetParams insetDefaults_;
+    meshedit::BevelParams bevelDefaults_;
     bool insetModal_ = false;
+    int modalOp_ = 0;  // MeshOp::Inset or MeshOp::Bevel while the mouse adjusts it
     Vec2 insetCenter_, insetStartMouse_;
     float insetWorldPerPixel_ = 0.01f;
     std::unordered_map<uint32_t, MeshAccel> meshAccel_;  // picking BVHs, per object
@@ -509,5 +673,9 @@ private:
     uint64_t editEdgesVersion_ = ~0ull;  // topology stamp the edge list was built from
     std::vector<LineVertex> editLines_, editPoints_;
     uint64_t editOverlayKey_ = ~0ull;
+    // Indexed edit overlay (see Renderer::drawEditElements)
+    std::vector<uint32_t> editEdgeIdx_, editSelEdgeIdx_, editPointIdx_, editSelPointIdx_, editFillIdx_;
+    std::vector<Vec3> editPos_;
+    uint64_t editTopoKey_ = ~0ull, editSelKey_ = ~0ull, editPosKey_ = ~0ull;
     std::vector<Vec3> scratch_;
 };

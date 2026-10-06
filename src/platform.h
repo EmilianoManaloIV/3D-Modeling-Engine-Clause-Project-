@@ -9,7 +9,9 @@
 #include <string>
 #include <vector>
 
-// Letters and digits use their uppercase ASCII codes ('A', '7', ...).
+// Letters and digits use their uppercase ASCII codes ('A', '7', ...), and
+// punctuation keys the ASCII code of their unshifted character
+// (- = [ ] ; ' , . / \ and the backtick).
 enum Key : int {
     KEY_SPACE = 32,
     KEY_ESCAPE = 256,
@@ -28,6 +30,7 @@ enum Key : int {
     KEY_ALT,
     KEY_F1,
     KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_F11, KEY_F12,
+    KEY_PAGEUP, KEY_PAGEDOWN, KEY_INSERT,
     KEY_COUNT = 512
 };
 
@@ -37,6 +40,9 @@ struct Input {
     float mouseX = 0, mouseY = 0;    // window pixels, origin top-left
     float mouseDX = 0, mouseDY = 0;  // motion this frame
     float wheel = 0;                 // notches this frame (+ = away from user)
+    float wheelX = 0;                // horizontal scroll (+ = right), e.g. two-finger trackpad swipes
+    bool pinch = false;              // the wheel motion is a trackpad pinch (Windows sends Ctrl+wheel)
+    bool fractionalWheel = false;    // wheel steps smaller than a notch arrived (trackpad / smooth wheel)
     bool mouseDown[3] = {};
     bool mousePressed[3] = {};
     bool mouseReleased[3] = {};
@@ -53,7 +59,8 @@ struct Input {
     bool pressed(int k) const { return k > 0 && k < KEY_COUNT && keyPressed[k]; }
 
     void beginFrame() {
-        mouseDX = mouseDY = wheel = 0;
+        mouseDX = mouseDY = wheel = wheelX = 0;
+        pinch = false;
         std::fill(std::begin(mousePressed), std::end(mousePressed), false);
         std::fill(std::begin(mouseReleased), std::end(mouseReleased), false);
         std::fill(std::begin(keyPressed), std::end(keyPressed), false);
@@ -115,4 +122,9 @@ void sleepMs(int ms);
 // kdialog when installed). Returns the chosen path, or "" if cancelled /
 // unavailable. `images` filters to image files.
 std::string openFileDialog(const std::string& title, bool images);
+// Automated runs (stress test) must never block on a dialog: when disabled,
+// openFileDialog returns "" at once.
+void setDialogsEnabled(bool on);
+// Memory used by the process in MB (Windows: private bytes, Linux: resident set).
+double memoryMB();
 }  // namespace platform

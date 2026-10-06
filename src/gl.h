@@ -21,6 +21,7 @@ typedef float GLfloat;
 typedef char GLchar;
 typedef unsigned char GLubyte;
 typedef std::ptrdiff_t GLsizeiptr;
+typedef std::ptrdiff_t GLintptr;
 typedef unsigned long long GLuint64;
 
 #define GL_FALSE 0
@@ -75,6 +76,8 @@ typedef unsigned long long GLuint64;
 #define GL_PROGRAM_POINT_SIZE 0x8642
 #define GL_ARRAY_BUFFER 0x8892
 #define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#define GL_COPY_READ_BUFFER 0x8F36
+#define GL_COPY_WRITE_BUFFER 0x8F37
 #define GL_UNSIGNED_INT 0x1405
 #define GL_STREAM_DRAW 0x88E0
 #define GL_STATIC_DRAW 0x88E4
@@ -132,6 +135,10 @@ typedef unsigned long long GLuint64;
     X(GLenum, CheckFramebufferStatus, (GLenum target))                                                       \
     X(void, DrawElements, (GLenum mode, GLsizei count, GLenum type, const void* indices)) \
     X(void, DrawArrays, (GLenum mode, GLint first, GLsizei count))                                           \
+    X(void, DrawElementsBaseVertex, (GLenum mode, GLsizei count, GLenum type, const void* indices,            \
+                                     GLint basevertex))                                                      \
+    X(void, CopyBufferSubData, (GLenum readTarget, GLenum writeTarget, GLintptr readOffset, GLintptr writeOffset, \
+                                GLsizeiptr size))                                                            \
     X(void, GenBuffers, (GLsizei n, GLuint * buffers))                                                       \
     X(void, DeleteBuffers, (GLsizei n, const GLuint* buffers))                                               \
     X(void, BindBuffer, (GLenum target, GLuint buffer))                                                      \
@@ -140,6 +147,9 @@ typedef unsigned long long GLuint64;
     X(void, DeleteVertexArrays, (GLsizei n, const GLuint* arrays))                                           \
     X(void, BindVertexArray, (GLuint array))                                                                 \
     X(void, EnableVertexAttribArray, (GLuint index))                                                         \
+    X(void, DisableVertexAttribArray, (GLuint index))                                                        \
+    X(void, VertexAttrib4f, (GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w))                      \
+    X(void, BufferSubData, (GLenum target, GLintptr offset, GLsizeiptr size, const void* data))              \
     X(void, VertexAttribPointer, (GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, \
                                   const void* pointer))                                                      \
     X(GLuint, CreateShader, (GLenum type))                                                                   \

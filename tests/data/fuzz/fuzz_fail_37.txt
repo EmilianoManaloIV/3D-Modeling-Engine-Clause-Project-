@@ -1,0 +1,7 @@
+tool bevel edges
+base cylinder
+problem a closed mesh is no longer closed
+params width 0.208786 segments 3 profile 0.486949 clamp 0
+faces 0 2 3 5 7 18 22 27 28 31 35 38 43 46 48 52 59
+edges 1 18 3 4 6 14 10 14 11 14 12 13 12 29 17 20 17 28 20 21 26 27 29 30
+verts 3 8 14 29

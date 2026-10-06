@@ -1,0 +1,7 @@
+tool bevel edges
+base cone
+problem face 13 repeats a corner
+params width 1.39435 segments 1 profile 0.239624 clamp 1
+faces 3 8 9
+edges 2 15 3 12 4 5 7 8 13 14
+verts 1 9

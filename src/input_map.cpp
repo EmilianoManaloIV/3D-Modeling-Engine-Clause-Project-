@@ -53,6 +53,22 @@ const ActionInfo kInfo[kActionCount] = {
     {"cam_back", "Cam back", C::Global, true},
     {"cam_left", "Cam left", C::Global, true},
     {"cam_right", "Cam right", C::Global, true},
+    {"palette", "Commands", C::Global, false},
+    {"zoom_in", "Zoom in", C::Global, true},
+    {"zoom_out", "Zoom out", C::Global, true},
+    {"orbit_left", "Orbit left", C::Global, true},
+    {"orbit_right", "Orbit right", C::Global, true},
+    {"orbit_up", "Orbit up", C::Global, true},
+    {"orbit_down", "Orbit down", C::Global, true},
+    {"fly_mode", "Fly mode", C::Global, false},
+    {"next_object", "Next object", C::Global, false},
+    {"prev_object", "Prev object", C::Global, false},
+    {"join", "Join objects", C::Global, false},
+    {"ws_model", "Model space", C::Global, false},
+    {"ws_texture", "Texture space", C::Global, false},
+    {"ws_rig", "Rig space", C::Global, false},
+    {"ws_light", "Light space", C::Global, false},
+    {"ws_render", "Render space", C::Global, false},
     {"fly_forward", "Forward", C::Fly, true},
     {"fly_back", "Back", C::Fly, true},
     {"fly_left", "Left", C::Fly, true},
@@ -66,6 +82,15 @@ const ActionInfo kInfo[kActionCount] = {
     {"select_edges", "Edge mode", C::Edit, false},
     {"select_faces", "Face mode", C::Edit, false},
     {"inset", "Inset", C::Edit, false},
+    {"bevel", "Bevel", C::Edit, false},
+    {"loop_cut", "Loop cut", C::Edit, false},
+    {"connect", "Connect", C::Edit, false},
+    {"merge", "Merge", C::Edit, false},
+    {"fill", "Fill", C::Edit, false},
+    {"bridge", "Bridge", C::Edit, false},
+    {"push_through", "Push thru", C::Edit, false},
+    {"select_more", "Select more", C::Edit, false},
+    {"select_less", "Select less", C::Edit, false},
 };
 
 Binding B(const char* text) {
@@ -80,9 +105,10 @@ struct Default {
 };
 using A = Action;
 const Default kDefaults[] = {
-    {A::Help, "F1", "", "F1", "H"},
-    {A::Stats, "F3", "", "F3", ""},
-    {A::Screenshot, "F12", "", "F12", ""},
+    // Every F-key action has a second binding that works on 60-65% keyboards.
+    {A::Help, "F1", "S-/", "F1", "S-/"},
+    {A::Stats, "F3", "C-I", "F3", "C-I"},
+    {A::Screenshot, "F12", "C-S-P", "F12", "C-S-P"},
     {A::Undo, "C-Z", "", "C-Z", ""},
     {A::Redo, "C-Y", "C-S-Z", "C-Y", "C-S-Z"},
     {A::Save, "C-S", "", "C-S", ""},
@@ -113,16 +139,32 @@ const Default kDefaults[] = {
     {A::TogglePivotCenter, "Z", "", "", ""},
     {A::CycleShading, "S-Z", "", "Z", ""},
     {A::ToggleWireframe, "", "", "W", ""},
-    {A::ModalGrab, "", "", "G", ""},
+    {A::ModalGrab, "G", "", "G", ""},
     {A::ModalRotate, "", "", "R", ""},
     {A::ModalScale, "", "", "S", ""},
-    {A::Render, "F5", "", "F5", ""},
+    {A::Render, "F5", "C-S-R", "F5", "C-S-R"},
     {A::LookThroughCamera, "0", "", "0", ""},
     {A::AlignCameraToView, "C-A-0", "", "C-A-0", ""},
     {A::CameraForward, "Up", "", "", ""},
     {A::CameraBack, "Down", "", "", ""},
     {A::CameraLeft, "Left", "", "", ""},
     {A::CameraRight, "Right", "", "", ""},
+    {A::Palette, "C-K", "S-Space", "C-K", "S-Space"},
+    {A::ZoomIn, "Equals", "", "Equals", ""},
+    {A::ZoomOut, "Minus", "", "Minus", ""},
+    {A::OrbitLeft, "A-Left", "", "A-Left", ""},
+    {A::OrbitRight, "A-Right", "", "A-Right", ""},
+    {A::OrbitUp, "A-Up", "", "A-Up", ""},
+    {A::OrbitDown, "A-Down", "", "A-Down", ""},
+    {A::FlyMode, "S-F", "", "S-F", ""},
+    {A::NextObject, "]", "", "]", ""},
+    {A::PrevObject, "[", "", "[", ""},
+    {A::JoinObjects, "C-J", "", "C-J", ""},
+    {A::WorkspaceModel, "A-1", "", "A-1", ""},
+    {A::WorkspaceTexture, "A-2", "", "A-2", ""},
+    {A::WorkspaceRig, "A-3", "", "A-3", ""},
+    {A::WorkspaceLight, "A-4", "", "A-4", ""},
+    {A::WorkspaceRender, "A-5", "", "A-5", ""},
     {A::FlyForward, "W", "", "W", ""},
     {A::FlyBack, "S", "", "S", ""},
     {A::FlyLeft, "A", "", "A", ""},
@@ -136,6 +178,15 @@ const Default kDefaults[] = {
     {A::SelectEdges, "2", "", "2", ""},
     {A::SelectFaces, "3", "", "3", ""},
     {A::Inset, "I", "", "I", ""},
+    {A::Bevel, "C-B", "", "C-B", ""},
+    {A::LoopCut, "C-R", "", "C-R", ""},
+    {A::Connect, "J", "", "J", ""},
+    {A::Merge, "M", "", "M", ""},
+    {A::Fill, "A-F", "", "A-F", ""},
+    {A::Bridge, "A-B", "", "A-B", ""},
+    {A::PushThrough, "A-E", "", "A-E", ""},
+    {A::SelectMore, "C-Equals", "", "C-Equals", ""},
+    {A::SelectLess, "C-Minus", "", "C-Minus", ""},
 };
 
 struct NamedKey {
@@ -146,6 +197,8 @@ const NamedKey kNames[] = {
     {KEY_SPACE, "Space"},   {KEY_ESCAPE, "Esc"},     {KEY_ENTER, "Enter"}, {KEY_TAB, "Tab"},
     {KEY_BACKSPACE, "Bksp"}, {KEY_DELETE, "Delete"}, {KEY_LEFT, "Left"},   {KEY_RIGHT, "Right"},
     {KEY_UP, "Up"},         {KEY_DOWN, "Down"},      {KEY_HOME, "Home"},   {KEY_END, "End"},
+    {KEY_PAGEUP, "PgUp"},   {KEY_PAGEDOWN, "PgDn"},  {KEY_INSERT, "Ins"},  {'-', "Minus"},
+    {'=', "Equals"},
 };
 
 bool modsMatch(const Binding& b, const Input& in) {
@@ -237,6 +290,7 @@ bool KeyMap::down(Action a, const Input& in) const {
         if (!b.bound() || b.key >= KEY_COUNT || !in.keyDown[b.key]) continue;
         if ((b.ctrl && !in.ctrl()) || (b.alt && !in.alt())) continue;
         if (!b.ctrl && in.ctrl()) continue;  // Ctrl+key belongs to shortcuts
+        if (!b.alt && in.alt()) continue;    // Alt+arrows orbit; plain arrows move
         return true;
     }
     return false;

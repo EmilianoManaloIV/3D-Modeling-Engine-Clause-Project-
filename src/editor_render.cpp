@@ -1,4 +1,5 @@
 #include "editor_internal.h"
+#include "gl.h"
 #include "skin.h"
 #include "profiler.h"
 
@@ -56,6 +57,7 @@ void Editor::collectLights(FrameParams& f) {
 }
 
 void Editor::updateParticles(float dt) {
+    WorldCacheScope worldCache(scene_);
     std::unordered_set<uint32_t> emitters;
     for (int i = 0; i < (int)scene_.objects.size(); ++i) {
         const Object& o = scene_.objects[i];
@@ -205,6 +207,7 @@ void Editor::appendGizmos(std::vector<LineVertex>& lines, std::vector<ParticleVe
 }
 
 void Editor::renderViewport() {
+    WorldCacheScope worldCache(scene_);
     const int vx = (int)viewport_.x, vy = (int)(screenH_ - (viewport_.y + viewport_.h));
     renderer_.beginViewport(vx, vy, (int)viewport_.w, (int)viewport_.h, kViewportBg);
     if (renderView_) {  // path-traced image instead of the raster preview
@@ -348,71 +351,93 @@ void Editor::renderViewport() {
         PROF_SCOPE("edit overlay");
         const Object& o = *activeMesh();
         const auto& sel = vertSel();
-        // Edges depend on topology only; the line/point buffers on positions and
-        // selection. Rebuild each only when its inputs change.
+        // One position buffer (re-sent when the mesh moves) + index lists per
+        // element kind (rebuilt only when the topology or selection changes):
+        // dragging vertices of a dense mesh uploads just the positions.
         if (editEdgesVersion_ != o.mesh.topology || o.mesh.topology == 0) {
             editEdges_ = uniqueEdges(o.mesh);
             editEdgesVersion_ = o.mesh.topology;
         }
         syncEditSelection();
+        const bool faceMode = selMode_ == SelMode::Face;
+        const uint64_t topoKey = (o.mesh.topology * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)o.id << 40) ^ (uint64_t)selMode_;
         uint64_t selHash = 1469598103934665603ull;
         for (char c : sel) selHash = (selHash ^ (uint8_t)c) * 1099511628211ull;
-        for (char c : fsel_) selHash = (selHash ^ (uint8_t)c) * 1099511628211ull;
-        for (const auto& e : esel_) selHash = (selHash ^ (uint64_t)(e.first * 31 + e.second)) * 1099511628211ull;
-        selHash ^= (uint64_t)selMode_ * 0x51ED27F1ull;
-        const uint64_t key = (o.mesh.version * 0x9E3779B97F4A7C15ull) ^ selHash ^ ((uint64_t)o.id << 40);
-        if (key != editOverlayKey_) {
-            const Color dark{0.05f, 0.05f, 0.07f, 1};
-            // Which edges are drawn as selected depends on the mode.
-            std::unordered_set<uint64_t> selEdges;
-            if (selMode_ == SelMode::Edge) {
-                for (const auto& e : esel_) selEdges.insert((uint64_t(uint32_t(e.first)) << 32) | uint32_t(e.second));
-            } else if (selMode_ == SelMode::Face) {
-                for (size_t f = 0; f < fsel_.size(); ++f) {
+        if (selMode_ == SelMode::Face)
+            for (char c : fsel_) selHash = (selHash ^ (uint8_t)c) * 1099511628211ull;
+        if (selMode_ == SelMode::Edge)
+            for (const auto& e : esel_) selHash = (selHash ^ (uint64_t)(e.first * 31 + e.second)) * 1099511628211ull;
+        const uint64_t selKey = topoKey ^ (selHash * 0xC2B2AE3D27D4EB4Full);
+        if (topoKey != editTopoKey_) {
+            editEdgeIdx_.clear();
+            editEdgeIdx_.reserve(editEdges_.size() * 2);
+            for (auto [ea, eb] : editEdges_) {
+                editEdgeIdx_.push_back((uint32_t)ea);
+                editEdgeIdx_.push_back((uint32_t)eb);
+            }
+            editPointIdx_.clear();
+            const size_t nv = o.mesh.verts.size();
+            if (selMode_ == SelMode::Vertex)
+                for (size_t v = 0; v < nv; ++v) editPointIdx_.push_back((uint32_t)v);
+            else if (faceMode)
+                for (size_t f = 0; f < o.mesh.faces.size(); ++f) editPointIdx_.push_back((uint32_t)(nv + f));
+            editTopoKey_ = topoKey;
+        }
+        if (selKey != editSelKey_) {
+            editSelEdgeIdx_.clear();
+            editSelPointIdx_.clear();
+            editFillIdx_.clear();
+            const size_t nv = o.mesh.verts.size();
+            if (selMode_ == SelMode::Vertex) {
+                for (auto [ea, eb] : editEdges_)
+                    if (sel[ea] && sel[eb]) editSelEdgeIdx_.push_back((uint32_t)ea), editSelEdgeIdx_.push_back((uint32_t)eb);
+                for (size_t v = 0; v < nv; ++v)
+                    if (sel[v]) editSelPointIdx_.push_back((uint32_t)v);
+            } else if (selMode_ == SelMode::Edge) {
+                for (const auto& e : esel_)
+                    editSelEdgeIdx_.push_back((uint32_t)e.first), editSelEdgeIdx_.push_back((uint32_t)e.second);
+            } else {
+                for (size_t f = 0; f < o.mesh.faces.size() && f < fsel_.size(); ++f) {
                     if (!fsel_[f]) continue;
                     const auto& face = o.mesh.faces[f];
                     for (size_t i = 0; i < face.size(); ++i) {
-                        auto e = meshedit::makeEdge(face[i], face[(i + 1) % face.size()]);
-                        selEdges.insert((uint64_t(uint32_t(e.first)) << 32) | uint32_t(e.second));
+                        editSelEdgeIdx_.push_back((uint32_t)face[i]);
+                        editSelEdgeIdx_.push_back((uint32_t)face[(i + 1) % face.size()]);
                     }
-                }
-            }
-            editLines_.clear();
-            editLines_.reserve(editEdges_.size() * 2);
-            for (auto [a, b] : editEdges_) {
-                bool on = selMode_ == SelMode::Vertex ? (sel[a] && sel[b])
-                                                      : selEdges.count((uint64_t(uint32_t(a)) << 32) | uint32_t(b)) > 0;
-                Color c = on ? theme::selection : kEdgeDark;
-                editLines_.push_back({o.mesh.verts[a], c});
-                editLines_.push_back({o.mesh.verts[b], c});
-            }
-            editPoints_.clear();
-            editFill_.clear();
-            if (selMode_ == SelMode::Vertex) {
-                editPoints_.reserve(o.mesh.verts.size());
-                for (size_t v = 0; v < o.mesh.verts.size(); ++v)
-                    editPoints_.push_back({o.mesh.verts[v], sel[v] ? theme::selection : dark});
-            } else if (selMode_ == SelMode::Face) {
-                const Color fill = withAlpha(theme::selection, 0.28f);
-                for (size_t f = 0; f < o.mesh.faces.size(); ++f) {
-                    const auto& face = o.mesh.faces[f];
-                    const bool on = f < fsel_.size() && fsel_[f];
-                    editPoints_.push_back({faceCenter(o.mesh, face), on ? theme::selection : dark});
-                    if (!on) continue;
                     for (size_t i = 1; i + 1 < face.size(); ++i) {
-                        editFill_.push_back({o.mesh.verts[face[0]], fill});
-                        editFill_.push_back({o.mesh.verts[face[i]], fill});
-                        editFill_.push_back({o.mesh.verts[face[i + 1]], fill});
+                        editFillIdx_.push_back((uint32_t)face[0]);
+                        editFillIdx_.push_back((uint32_t)face[i]);
+                        editFillIdx_.push_back((uint32_t)face[i + 1]);
                     }
+                    editSelPointIdx_.push_back((uint32_t)(nv + f));
                 }
             }
-            editOverlayKey_ = key;
+            editSelKey_ = selKey;
         }
-        Mat4 m = scene_.world(scene_.active);
-        renderer_.drawTrianglesCached(2, key, editFill_, f, m, !wireframe_);
-        renderer_.drawLinesCached(0, key, editLines_, f, m, !wireframe_, false, selMode_ == SelMode::Edge ? 2.0f : 1.0f);
-        renderer_.drawLinesCached(1, key, editPoints_, f, m, !wireframe_, true,
-                                  (selMode_ == SelMode::Face ? 2.5f : 3.5f) * fontScale_);
+        // Face mode also needs the face centres (appended after the vertices).
+        const uint64_t posKey = (o.mesh.version * 0x165667B19E3779F9ull) ^ ((uint64_t)o.id << 40) ^ (faceMode ? 7u : 3u);
+        if (faceMode) {
+            if (posKey != editPosKey_) {
+                editPos_ = o.mesh.verts;
+                editPos_.reserve(o.mesh.verts.size() + o.mesh.faces.size());
+                for (const auto& face : o.mesh.faces) editPos_.push_back(faceCenter(o.mesh, face));
+                editPosKey_ = posKey;
+            }
+            renderer_.setEditPositions(posKey, editPos_);
+        } else {
+            renderer_.setEditPositions(posKey, o.mesh.verts);
+        }
+        const Mat4 m = scene_.world(scene_.active);
+        const bool depth = !wireframe_;
+        const Color dark{0.05f, 0.05f, 0.07f, 1};
+        renderer_.drawEditElements(0, selKey, editFillIdx_, GL_TRIANGLES, withAlpha(theme::selection, 0.28f), f, m, depth, 1.0f);
+        renderer_.drawEditElements(1, topoKey, editEdgeIdx_, GL_LINES, kEdgeDark, f, m, depth, 1.0f);
+        renderer_.drawEditElements(2, selKey, editSelEdgeIdx_, GL_LINES, theme::selection, f, m, depth, 1.0f);
+        const float ps = (faceMode ? 2.5f : 3.5f) * fontScale_;
+        if (selMode_ != SelMode::Edge) {
+            renderer_.drawEditElements(3, topoKey, editPointIdx_, GL_POINTS, dark, f, m, depth, ps);
+            renderer_.drawEditElements(4, selKey, editSelPointIdx_, GL_POINTS, theme::selection, f, m, depth, ps);
+        }
     }
 
     // Gizmos for lights, bones, empties and emitters (drawn on top).

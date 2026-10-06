@@ -295,19 +295,48 @@ int triangulateMesh(Mesh& m, int minSides) {
     std::vector<int> corners;
     int split = 0;
     for (size_t f = 0; f < m.faces.size(); ++f) {
-        const auto& face = m.faces[f];
-        if ((int)face.size() < minSides) {
-            faces.push_back(face);
-            if (uvs) faceUVs.push_back(m.uvs[f]);
-            continue;
+        const auto& whole = m.faces[f];
+        // A face that passes a vertex twice (a "figure 8", e.g. a hole closed
+        // around a pinched vertex) is first cut there into simple loops;
+        // triangulating it as one polygon reused edges (found by the fuzzer).
+        std::vector<std::vector<int>> loops;  // corner indices
+        {
+            std::vector<int> cur;
+            for (int i = 0; i < (int)whole.size(); ++i) {
+                int at = -1;
+                for (int k = 0; k < (int)cur.size(); ++k)
+                    if (whole[cur[k]] == whole[i]) at = k;
+                if (at >= 0) {
+                    loops.emplace_back(cur.begin() + at, cur.end());
+                    cur.resize(at);
+                }
+                cur.push_back(i);
+            }
+            loops.push_back(cur);
         }
-        corners.clear();
-        triangulate(m.verts, face, corners);
-        for (size_t t = 0; t + 2 < corners.size(); t += 3) {
-            faces.push_back({face[corners[t]], face[corners[t + 1]], face[corners[t + 2]]});
-            if (uvs) faceUVs.push_back({m.uvs[f][corners[t]], m.uvs[f][corners[t + 1]], m.uvs[f][corners[t + 2]]});
+        for (const auto& loopCorners : loops) {
+            if (loopCorners.size() < 3) continue;
+            std::vector<int> face;
+            std::vector<Vec2> fu;
+            for (int c : loopCorners) {
+                face.push_back(whole[c]);
+                if (uvs) fu.push_back(m.uvs[f][c]);
+            }
+            if ((int)face.size() < minSides && loops.size() == 1) {
+                faces.push_back(face);
+                if (uvs) faceUVs.push_back(fu);
+                continue;
+            }
+            corners.clear();
+            triangulate(m.verts, face, corners);
+            for (size_t t = 0; t + 2 < corners.size(); t += 3) {
+                const int a = face[corners[t]], b = face[corners[t + 1]], c = face[corners[t + 2]];
+                if (a == b || b == c || a == c) continue;
+                faces.push_back({a, b, c});
+                if (uvs) faceUVs.push_back({fu[corners[t]], fu[corners[t + 1]], fu[corners[t + 2]]});
+            }
         }
-        ++split;
+        if (loops.size() > 1 || (int)whole.size() >= minSides) ++split;
     }
     m.faces.swap(faces);
     m.uvs.swap(faceUVs);

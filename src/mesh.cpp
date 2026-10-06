@@ -1,4 +1,5 @@
 #include "mesh.h"
+#include "meshedit.h"
 
 #include "jobs.h"
 #include "polygon.h"
@@ -581,7 +582,12 @@ bool extrudeSelectedFaces(Mesh& m, std::vector<char>& sel, Vec3* outNormal) {
     return extrudeFaces(m, selectedFaces(m, sel), sel, outNormal);
 }
 
-bool extrudeFaces(Mesh& m, const std::vector<int>& region, std::vector<char>& sel, Vec3* outNormal) {
+bool extrudeFaces(Mesh& m, const std::vector<int>& regionIn, std::vector<char>& sel, Vec3* outNormal) {
+    // Corners are grouped into fans (meshedit::cornerFans): every fan gets its
+    // own extruded copy of its vertex, so a selection that touches itself at
+    // a single vertex (two faces sharing only a corner) stays manifold.
+    const meshedit::CornerFans cf = meshedit::cornerFans(m, regionIn);
+    const std::vector<int>& region = cf.faces;
     if (region.empty()) return false;
     const bool uvs = m.hasUVs(), weights = m.hasWeights();
 
@@ -594,10 +600,10 @@ bool extrudeFaces(Mesh& m, const std::vector<int>& region, std::vector<char>& se
     }
 
     Vec3 normal;
-    std::unordered_map<int, int> dup;  // old vertex -> extruded copy
-    auto copyOf = [&](int v) {
-        auto it = dup.find(v);
-        if (it != dup.end()) return it->second;
+    std::vector<int> copy(cf.count, -1);  // fan -> extruded vertex
+    auto copyOf = [&](int fan) {
+        if (copy[fan] >= 0) return copy[fan];
+        const int v = cf.fanVertex[fan];
         int n = (int)m.verts.size();
         Vec3 p = m.verts[v];
         m.verts.push_back(p);
@@ -605,20 +611,21 @@ bool extrudeFaces(Mesh& m, const std::vector<int>& region, std::vector<char>& se
             BoneWeights w = m.weights[v];
             m.weights.push_back(w);
         }
-        dup[v] = n;
+        copy[fan] = n;
         return n;
     };
 
     std::vector<std::vector<int>> sideFaces;
     std::vector<std::vector<Vec2>> sideUVs;
-    for (int f : region) {
+    for (int li = 0; li < (int)region.size(); ++li) {
+        const int f = region[li];
         normal += faceNormalRaw(m, m.faces[f]);
         const auto face = m.faces[f];  // copy: m.verts may grow below
         for (size_t i = 0; i < face.size(); ++i) {
             size_t j = (i + 1) % face.size();
             int a = face[i], b = face[j];
             if (directed.count(directedKey(b, a))) continue;
-            sideFaces.push_back({a, b, copyOf(b), copyOf(a)});
+            sideFaces.push_back({a, b, copyOf(cf.of(li, (int)j)), copyOf(cf.of(li, (int)i))});
             if (uvs) {
                 Vec2 ua = m.uvs[f][i], ub = m.uvs[f][j];
                 // Give the wall a strip of UV space next to its edge.
@@ -628,15 +635,18 @@ bool extrudeFaces(Mesh& m, const std::vector<int>& region, std::vector<char>& se
             }
         }
     }
-    for (int f : region)
-        for (int& v : m.faces[f]) v = copyOf(v);
+    for (int li = 0; li < (int)region.size(); ++li) {
+        auto& face = m.faces[region[li]];
+        for (int i = 0; i < (int)face.size(); ++i) face[i] = copyOf(cf.of(li, i));
+    }
     for (size_t i = 0; i < sideFaces.size(); ++i) {
         m.faces.push_back(std::move(sideFaces[i]));
         if (uvs) m.uvs.push_back(std::move(sideUVs[i]));
     }
 
     sel.assign(m.verts.size(), 0);
-    for (const auto& kv : dup) sel[kv.second] = 1;
+    for (int c : copy)
+        if (c >= 0) sel[c] = 1;
 
     std::vector<int> remap = removeUnusedVertices(m);
     std::vector<char> newSel(m.verts.size(), 0);
@@ -684,9 +694,13 @@ bool raycastMesh(const Mesh& m, const std::vector<Vec3>& p, Vec3 o, Vec3 d, floa
 bool raycastMesh(const Mesh& m, Vec3 o, Vec3 d, float& tHit) { return raycastMesh(m, m.verts, o, d, tHit); }
 
 void buildRenderMesh(const Mesh& m, const std::vector<Vec3>& p, bool smooth, float smoothAngleDeg, int weightSlot,
-                     std::vector<RenderVertex>& outV, std::vector<uint32_t>& outI) {
+                     std::vector<RenderVertex>& outV, std::vector<uint32_t>& outI, RenderMap* map) {
     outV.clear();
     outI.clear();
+    if (map) {
+        map->clear();
+        map->groupStart.push_back(0);
+    }
     outI.reserve(m.triangleCount() * 3);
     outV.reserve(smooth ? p.size() + p.size() / 4 : m.triangleCount() + m.faces.size() * 2);
     const size_t F = m.faces.size();
@@ -759,18 +773,32 @@ void buildRenderMesh(const Mesh& m, const std::vector<Vec3>& p, bool smooth, flo
                 }
             }
             Vec3 normal = unitN[f];
+            uint8_t kind = 1;
             if (smooth) {
                 if (simple[v]) {
                     normal = vertexN[v];
+                    kind = 0;
                 } else {
                     Vec3 sum;
+                    const size_t groupBegin = map ? map->groupFaces.size() : 0;
                     for (int k = adjStart[v]; k < adjStart[v + 1]; ++k) {
                         int g = adjFaces[k];
-                        if (dot(unitN[g], unitN[f]) >= cosLimit) sum += rawN[g];  // area weighted
+                        if (dot(unitN[g], unitN[f]) >= cosLimit) {
+                            sum += rawN[g];  // area weighted
+                            if (map) map->groupFaces.push_back(g);
+                        }
                     }
                     Vec3 nn = normalize(sum);
-                    if (dot(nn, nn) > 0.5f) normal = nn;
+                    if (dot(nn, nn) > 0.5f) normal = nn, kind = 2;
+                    else if (map) map->groupFaces.resize(groupBegin);
                 }
+            }
+            if (map) {
+                map->source.push_back(v);
+                map->face.push_back((int)f);
+                map->corner.push_back((int)i);
+                map->kind.push_back(kind);
+                map->groupStart.push_back((int)map->groupFaces.size());
             }
             RenderVertex rv;
             rv.pos = p[v];
@@ -801,6 +829,45 @@ void buildRenderMesh(const Mesh& m, const std::vector<Vec3>& p, bool smooth, flo
             }
         }
     }
+}
+
+void refreshRenderMesh(const Mesh& m, const std::vector<Vec3>& p, int weightSlot, const RenderMap& map,
+                       std::vector<RenderVertex>& outV) {
+    const size_t F = m.faces.size(), R = map.source.size();
+    std::vector<Vec3> rawN(F);
+    jobs::parallelFor(0, (int)F, 8192, [&](int fb, int fe) {
+        for (int f = fb; f < fe; ++f)
+            if (m.faces[f].size() >= 3) rawN[f] = faceNormalRaw(p, m.faces[f]);
+    });
+    bool anySmooth = false;
+    for (uint8_t k : map.kind) anySmooth = anySmooth || k == 0;
+    std::vector<Vec3> vertexN;
+    if (anySmooth) {
+        vertexN.assign(p.size(), Vec3());
+        for (size_t f = 0; f < F; ++f)
+            for (int v : m.faces[f]) vertexN[v] += rawN[f];
+    }
+    const bool uvs = m.hasUVs(), weights = weightSlot >= 0 && m.hasWeights();
+    outV.resize(R);
+    jobs::parallelFor(0, (int)R, 16384, [&](int rb, int re) {
+        for (int r = rb; r < re; ++r) {
+            RenderVertex& rv = outV[r];
+            const int v = map.source[r], f = map.face[r];
+            rv.pos = p[v];
+            Vec3 n;
+            if (map.kind[r] == 0) {
+                n = vertexN[v];
+            } else if (map.kind[r] == 2) {
+                for (int k = map.groupStart[r]; k < map.groupStart[r + 1]; ++k) n += rawN[map.groupFaces[k]];
+            } else {
+                n = rawN[f];
+            }
+            n = normalize(n);
+            rv.normal = dot(n, n) > 0.5f ? n : normalize(rawN[f]);
+            rv.uv = uvs ? m.uvs[f][map.corner[r]] : Vec2();
+            rv.weight = weights ? m.weights[v].weightOf(weightSlot) : 0.0f;
+        }
+    });
 }
 
 void buildRenderData(const Mesh& m, const std::vector<Vec3>& p, bool smooth, float smoothAngleDeg, int weightSlot,

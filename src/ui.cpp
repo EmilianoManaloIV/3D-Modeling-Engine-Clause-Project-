@@ -65,11 +65,43 @@ void UI::begin(const Input& in, int screenW, int screenH, int fontScale) {
     cmds_.push_back({screen, 0, 0});
     inputEnabled_ = true;
     activeSeen_ = editSeen_ = false;
+    screenW_ = (float)screenW;
+    screenH_ = (float)screenH;
+    tipSeen_ = false;
+    tipText_.clear();
+    lastId_ = 0;
+    if (in.mousePressed[0] || in.mousePressed[1] || in.mousePressed[2] || in.wheel != 0.0f) tipStart_ = time_ + 10.0;
     keyboardUsed_ = editId_ != 0;
     prevFieldId_ = 0;
 }
 
 void UI::end() {
+    if (!tipSeen_) tipId_ = 0;
+    if (!tipText_.empty() && tooltipsEnabled) {
+        // Drawn last, on top of everything, unclipped.
+        clips_.resize(1);
+        beginCmd(clips_[0]);
+        std::vector<std::string> lines;
+        size_t start = 0;
+        while (start <= tipText_.size()) {
+            size_t nl = tipText_.find('\n', start);
+            if (nl == std::string::npos) nl = tipText_.size();
+            lines.push_back(tipText_.substr(start, nl - start));
+            start = nl + 1;
+        }
+        float w = 0;
+        for (const auto& l : lines) w = std::max(w, textWidth(l));
+        const float pad = 3.0f * fs, lineH = 9.0f * fs;
+        w += 2 * pad;
+        float h = lines.size() * lineH + 2 * pad - 2.0f * fs;
+        float x = mx() + 8.0f * fs, y = my() + 10.0f * fs;
+        if (x + w > screenW_) x = std::max(0.0f, screenW_ - w);
+        if (y + h > screenH_) y = std::max(0.0f, my() - h - 4.0f * fs);
+        rect({x, y, w, h}, {0.07f, 0.075f, 0.085f, 0.97f});
+        border({x, y, w, h}, theme::border, (float)fs);
+        for (size_t i = 0; i < lines.size(); ++i)
+            text(x + pad, y + pad + i * lineH, lines[i], i == 0 ? theme::white : theme::text);
+    }
     cmds_.back().count = (int)verts_.size() - cmds_.back().first;
     // A widget that disappeared (e.g. its object was deleted) releases focus.
     if (activeId_ && !activeSeen_) activeId_ = 0;
@@ -192,7 +224,8 @@ void UI::header(const Rect& r, const std::string& label) {
 
 // --- widgets -----------------------------------------------------------------
 
-bool UI::button(uint32_t id, const Rect& r, const std::string& label, bool toggled) {
+bool UI::button(uint32_t id, const Rect& r, const std::string& label, bool toggled, bool dim) {
+    noteWidget(id, r);
     bool hot = hovered(r);
     bool clicked = false;
     if (hot && in_->mousePressed[MOUSE_LEFT] && activeId_ == 0) activeId_ = id;
@@ -208,12 +241,57 @@ bool UI::button(uint32_t id, const Rect& r, const std::string& label, bool toggl
     if (held && hot) bg = toggled ? lighten(theme::accent, -0.08f) : theme::buttonPress;
     else if (hot) bg = toggled ? lighten(theme::accent, 0.07f) : theme::buttonHover;
     rect(r, bg);
-    textIn(r, label, toggled ? theme::white : theme::text, true);
+    textIn(r, label, dim ? theme::textDim : toggled ? theme::white : theme::text, true);
     return clicked;
 }
 
+bool UI::collapsingHeader(uint32_t id, const Rect& r, const std::string& label, bool open) {
+    noteWidget(id, r);
+    bool hot = hovered(r);
+    bool clicked = hot && in_->mousePressed[MOUSE_LEFT] && activeId_ == 0;
+    if (hot) rect(r, withAlpha(theme::buttonHover, 0.5f));
+    const float y = r.y + (r.h - glyphH()) * 0.5f;
+    text(r.x + fs, y, open ? "-" : "+", hot ? theme::white : theme::accent);
+    const float tx = r.x + 8.0f * fs;
+    text(tx, y, label, hot ? theme::text : theme::textDim);
+    float lx = tx + textWidth(label) + 4.0f * fs;
+    if (lx < r.x + r.w) rect({lx, std::floor(r.y + r.h * 0.5f), r.x + r.w - lx, (float)std::max(1, fs / 2)}, theme::border);
+    return clicked;
+}
+
+int UI::searchField(uint32_t id, const Rect& r, std::string& value) {
+    noteWidget(id, r);
+    if (editId_ != id) {
+        beginEdit(id, value);
+        editAllSelected_ = false;
+        editJustOpened_ = true;  // the key that opened it is not typed into it
+    }
+    editSeen_ = true;
+    editKeys(editBuf_, false);
+    editJustOpened_ = false;
+    int result = 0;
+    if (in_->keyPressed[KEY_ESCAPE]) result = -1;
+    else if (in_->keyPressed[KEY_ENTER]) result = 1;
+    value = editBuf_;
+    drawEditText(r, theme::accent, theme::white);
+    if (result != 0) editId_ = 0;
+    return result;
+}
+
+void UI::tooltip(const std::string& textIn_) {
+    if (!inputEnabled_ || !tooltipsEnabled || textIn_.empty() || lastId_ == 0 || activeId_ != 0) return;
+    if (!hovered(lastRect_)) return;
+    tipSeen_ = true;
+    if (tipId_ != lastId_) {
+        tipId_ = lastId_;
+        tipStart_ = time_;
+    } else if (time_ - tipStart_ >= tooltipDelay) {
+        tipText_ = textIn_;
+    }
+}
+
 bool UI::selectable(uint32_t id, const Rect& r, const std::string& label, bool selected, bool active) {
-    (void)id;
+    noteWidget(id, r);
     bool hot = hovered(r);
     bool clicked = hot && in_->mousePressed[MOUSE_LEFT] && activeId_ == 0;
     if (active) rect(r, theme::accent);
@@ -224,6 +302,7 @@ bool UI::selectable(uint32_t id, const Rect& r, const std::string& label, bool s
 }
 
 bool UI::swatch(uint32_t id, const Rect& r, Color c, bool selected) {
+    noteWidget(id, r);
     bool hot = hovered(r);
     bool clicked = false;
     if (hot && in_->mousePressed[MOUSE_LEFT] && activeId_ == 0) activeId_ = id;
@@ -311,6 +390,7 @@ void UI::drawEditText(const Rect& r, Color borderColor, Color textColor) {
 }
 
 bool UI::dragFloat(uint32_t id, const Rect& r, float& value, float speed, Color accentColor, float lo, float hi) {
+    noteWidget(id, r);
     bool hot = hovered(r);
     bool changed = false;
 
@@ -332,7 +412,8 @@ bool UI::dragFloat(uint32_t id, const Rect& r, float& value, float speed, Color 
             editId_ = 0;
         } else if (in_->keyPressed[KEY_ENTER] || in_->keyPressed[KEY_TAB] || clickedAway) {
             double v = 0;
-            if (expr::evaluate(editBuf_, value, v)) {
+            // Non-finite results (1/0, 0/0) are rejected: they would poison the scene.
+            if (expr::evaluate(editBuf_, value, v) && std::isfinite(v)) {
                 float f = clampf((float)v, lo, hi);
                 if (f != value) {
                     value = f;
@@ -387,6 +468,7 @@ bool UI::dragFloat(uint32_t id, const Rect& r, float& value, float speed, Color 
 }
 
 bool UI::textField(uint32_t id, const Rect& r, std::string& value) {
+    noteWidget(id, r);
     bool hot = hovered(r);
     bool committed = false;
     if (editId_ != id && hot && in_->mousePressed[MOUSE_LEFT] && activeId_ == 0) beginEdit(id, value);

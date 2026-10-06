@@ -130,6 +130,16 @@ void build(Tree& t, std::vector<Poly> polys) {
         const float w = t.nodes[ni].w;
         for (const Poly& p : list) {
             std::vector<Poly>& co = t.nodes[ni].polys;
+            // A polygon whose stored plane IS this node's plane belongs here,
+            // whatever its vertices say: split pieces keep their parent's
+            // plane, and rounding can put a piece's vertices just outside it.
+            // Re-classifying it sent it to a child that took the same plane
+            // from it again - an endless descent (found by the stress test's
+            // fuzzer: a boolean ran out of memory). This guarantees progress.
+            if (p.n.x == n.x && p.n.y == n.y && p.n.z == n.z && p.w == w) {
+                co.push_back(p);
+                continue;
+            }
             splitPolygon(n, w, p, co, co, front, back);
         }
         if (!front.empty()) {

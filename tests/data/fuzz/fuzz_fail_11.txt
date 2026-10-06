@@ -1,0 +1,7 @@
+tool bevel edges
+base plane
+problem face 16 repeats a corner
+params width 1.49151 segments 1 profile 0.318132 clamp 0
+faces 1 5 6
+edges 0 5 5 6 5 10 6 7 10 11 14 33 15 20 16 21 23 24 29 30 31 32 35 36 44 45 47 48
+verts 7 9 15 28

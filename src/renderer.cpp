@@ -538,15 +538,14 @@ bool Renderer::init(std::string& error) {
 }
 
 void Renderer::shutdown() {
-    for (auto& kv : cache_) {
-        GpuMesh& g = kv.second;
-        gl::DeleteBuffers(1, &g.vbo);
-        gl::DeleteBuffers(1, &g.ebo);
-        gl::DeleteBuffers(1, &g.edgeVbo);
-        gl::DeleteVertexArrays(1, &g.vao);
-        gl::DeleteVertexArrays(1, &g.edgeVao);
-    }
+    for (auto& kv : cache_) releaseMesh(kv.second);
     cache_.clear();
+    if (pool_.vao) {
+        gl::DeleteBuffers(1, &pool_.vbo);
+        gl::DeleteBuffers(1, &pool_.ebo);
+        gl::DeleteVertexArrays(1, &pool_.vao);
+        pool_ = MeshPool();
+    }
     for (auto& kv : lineBatches_) {
         gl::DeleteBuffers(1, &kv.second.vbo);
         gl::DeleteVertexArrays(1, &kv.second.vao);
@@ -579,6 +578,8 @@ void Renderer::clearWindow(int w, int h, Color c) {
 }
 
 void Renderer::beginViewport(int x, int y, int w, int h, Color c) {
+    ++frameSerial_;  // per-frame uniforms of the mesh program are set again on first use
+    for (unsigned& t : boundTex_) t = ~0u;
     gl::Viewport(x, y, w, h);
     gl::Enable(GL_SCISSOR_TEST);
     gl::Scissor(x, y, w, h);
@@ -595,39 +596,188 @@ void Renderer::beginViewport(int x, int y, int w, int h, Color c) {
     gl::Disable(GL_CULL_FACE);
 }
 
+// ---------------------------------------------------------------------------
+// Mesh pool
+// ---------------------------------------------------------------------------
+bool Renderer::RangeAlloc::alloc(uint32_t n, uint32_t& off) {
+    for (size_t i = 0; i < free.size(); ++i)
+        if (free[i].second >= n) {
+            off = free[i].first;
+            free[i].first += n;
+            free[i].second -= n;
+            if (free[i].second == 0) free.erase(free.begin() + i);
+            return true;
+        }
+    return false;
+}
+
+void Renderer::RangeAlloc::release(uint32_t off, uint32_t n) {
+    if (n == 0) return;
+    auto it = std::lower_bound(free.begin(), free.end(), std::make_pair(off, 0u));
+    it = free.insert(it, {off, n});
+    size_t i = it - free.begin();
+    if (i + 1 < free.size() && free[i].first + free[i].second == free[i + 1].first) {  // merge with next
+        free[i].second += free[i + 1].second;
+        free.erase(free.begin() + i + 1);
+    }
+    if (i > 0 && free[i - 1].first + free[i - 1].second == free[i].first) {  // merge with previous
+        free[i - 1].second += free[i].second;
+        free.erase(free.begin() + i);
+    }
+}
+
+void Renderer::RangeAlloc::grow(uint32_t newCapacity) {
+    if (newCapacity <= capacity) return;
+    release(capacity, newCapacity - capacity);
+    capacity = newCapacity;
+}
+
+void Renderer::setupMeshAttribs() {
+    gl::EnableVertexAttribArray(0);
+    gl::VertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), offsetPtr(offsetof(RenderVertex, pos)));
+    gl::EnableVertexAttribArray(1);
+    gl::VertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), offsetPtr(offsetof(RenderVertex, normal)));
+    gl::EnableVertexAttribArray(2);
+    gl::VertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), offsetPtr(offsetof(RenderVertex, uv)));
+    gl::EnableVertexAttribArray(3);
+    gl::VertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), offsetPtr(offsetof(RenderVertex, weight)));
+}
+
+// Grows the pool's vertex or index buffer (doubling), copying what it holds.
+void Renderer::poolGrow(bool vertices, uint32_t need) {
+    if (!pool_.vao) {
+        gl::GenVertexArrays(1, &pool_.vao);
+        gl::GenBuffers(1, &pool_.vbo);
+        gl::GenBuffers(1, &pool_.ebo);
+    }
+    RangeAlloc& ra = vertices ? pool_.verts : pool_.indices;
+    const size_t elem = vertices ? sizeof(RenderVertex) : sizeof(uint32_t);
+    const uint32_t oldCap = ra.capacity;
+    uint32_t newCap = std::max<uint32_t>(oldCap ? oldCap * 2 : (vertices ? 65536u : 262144u), oldCap + need);
+    unsigned& buf = vertices ? pool_.vbo : pool_.ebo;
+    unsigned fresh = 0;
+    gl::GenBuffers(1, &fresh);
+    gl::BindBuffer(GL_COPY_WRITE_BUFFER, fresh);
+    gl::BufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)(newCap * elem), nullptr, GL_DYNAMIC_DRAW);
+    if (oldCap) {
+        gl::BindBuffer(GL_COPY_READ_BUFFER, buf);
+        gl::CopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)(oldCap * elem));
+    }
+    gl::DeleteBuffers(1, &buf);
+    buf = fresh;
+    ra.grow(newCap);
+    // Point the VAO at the new buffers.
+    gl::BindVertexArray(pool_.vao);
+    gl::BindBuffer(GL_ARRAY_BUFFER, pool_.vbo);
+    gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, pool_.ebo);
+    setupMeshAttribs();
+    gl::BindVertexArray(0);
+}
+
+void Renderer::poolUpload(GpuMesh& g) {
+    const uint32_t nv = (uint32_t)scratch_.size(), ni = (uint32_t)scratchIndices_.size();
+    if (!g.pooled || nv > g.vCap || ni > g.iCap) {
+        if (g.pooled) poolFree(g);
+        uint32_t vo = 0, io = 0;
+        while (!pool_.verts.alloc(nv, vo)) poolGrow(true, nv);
+        while (!pool_.indices.alloc(ni, io)) poolGrow(false, ni);
+        g.vOff = vo, g.vCap = nv, g.iOff = io, g.iCap = ni;
+        g.pooled = true;
+    }
+    gl::BindVertexArray(0);
+    gl::BindBuffer(GL_ARRAY_BUFFER, pool_.vbo);
+    gl::BufferSubData(GL_ARRAY_BUFFER, (GLintptr)g.vOff * (GLintptr)sizeof(RenderVertex),
+                      (GLsizeiptr)(nv * sizeof(RenderVertex)), scratch_.data());
+    gl::BindBuffer(GL_COPY_WRITE_BUFFER, pool_.ebo);
+    gl::BufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)g.iOff * 4, (GLsizeiptr)(ni * sizeof(uint32_t)),
+                      scratchIndices_.data());
+}
+
+void Renderer::poolFree(GpuMesh& g) {
+    if (!g.pooled) return;
+    pool_.verts.release(g.vOff, g.vCap);
+    pool_.indices.release(g.iOff, g.iCap);
+    g.pooled = false;
+    g.vCap = g.iCap = 0;
+}
+
+void Renderer::releaseMesh(GpuMesh& g) {
+    poolFree(g);
+    if (g.vbo) gl::DeleteBuffers(1, &g.vbo);
+    if (g.ebo) gl::DeleteBuffers(1, &g.ebo);
+    if (g.edgeVbo) gl::DeleteBuffers(1, &g.edgeVbo);
+    if (g.vao) gl::DeleteVertexArrays(1, &g.vao);
+    if (g.edgeVao) gl::DeleteVertexArrays(1, &g.edgeVao);
+    g.vao = g.vbo = g.ebo = g.edgeVao = g.edgeVbo = 0;
+}
+
+void Renderer::drawGpuMesh(const GpuMesh& g) {
+    if (g.triVerts <= 0) return;
+    if (g.pooled) {
+        gl::BindVertexArray(pool_.vao);
+        gl::DrawElementsBaseVertex(GL_TRIANGLES, g.triVerts, GL_UNSIGNED_INT,
+                                   reinterpret_cast<const void*>((uintptr_t)g.iOff * 4u), (GLint)g.vOff);
+    } else {
+        gl::BindVertexArray(g.vao);
+        gl::DrawElements(GL_TRIANGLES, g.triVerts, GL_UNSIGNED_INT, nullptr);
+    }
+}
+
 Renderer::GpuMesh& Renderer::gpuMesh(uint32_t id, uint64_t key, const Mesh& mesh, const std::vector<Vec3>& positions,
                                      bool smooth, int weightSlot) {
     GpuMesh& g = cache_[id];
-    if (!g.vao) {
-        gl::GenVertexArrays(1, &g.vao);
-        gl::GenBuffers(1, &g.vbo);
-        gl::GenBuffers(1, &g.ebo);
-        gl::BindVertexArray(g.vao);
-        gl::BindBuffer(GL_ARRAY_BUFFER, g.vbo);
-        gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ebo);  // part of the VAO state
-        gl::EnableVertexAttribArray(0);
-        gl::VertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), offsetPtr(offsetof(RenderVertex, pos)));
-        gl::EnableVertexAttribArray(1);
-        gl::VertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(RenderVertex),
-                                offsetPtr(offsetof(RenderVertex, normal)));
-        gl::EnableVertexAttribArray(2);
-        gl::VertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(RenderVertex), offsetPtr(offsetof(RenderVertex, uv)));
-        gl::EnableVertexAttribArray(3);
-        gl::VertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(RenderVertex),
-                                offsetPtr(offsetof(RenderVertex, weight)));
+    if (g.key != key && g.topology == mesh.topology && mesh.topology != 0 && g.smooth == smooth &&
+        g.weightSlot == weightSlot && g.vertexCount == positions.size() && g.map.source.size() == g.renderVertexCount &&
+        g.renderVertexCount > 0) {
+        // Same topology: only positions (and so normals) changed - a vertex
+        // drag or a new skinning pose. Keep the layout and index buffer.
+        PROF_SCOPE("mesh refresh+upload");
+        prof::count("mesh refreshes", 1);
+        refreshRenderMesh(mesh, positions, weightSlot, g.map, scratch_);
+        gl::BindBuffer(GL_ARRAY_BUFFER, g.pooled ? pool_.vbo : g.vbo);
+        gl::BufferSubData(GL_ARRAY_BUFFER, g.pooled ? (GLintptr)g.vOff * (GLintptr)sizeof(RenderVertex) : 0,
+                          (GLsizeiptr)(scratch_.size() * sizeof(RenderVertex)), scratch_.data());
+        prof::count("uploaded vertices", (double)scratch_.size());
+        g.key = key;
     }
     if (g.key != key) {
         PROF_SCOPE("mesh rebuild+upload");
         prof::count("mesh uploads", 1);
-        buildRenderMesh(mesh, positions, smooth, 40.0f, weightSlot, scratch_, scratchIndices_);
-        gl::BindVertexArray(g.vao);
-        gl::BindBuffer(GL_ARRAY_BUFFER, g.vbo);
-        gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(scratch_.size() * sizeof(RenderVertex)), scratch_.data(),
-                       GL_STATIC_DRAW);
-        gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ebo);
-        gl::BufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(scratchIndices_.size() * sizeof(uint32_t)),
-                       scratchIndices_.data(), GL_STATIC_DRAW);
+        buildRenderMesh(mesh, positions, smooth, 40.0f, weightSlot, scratch_, scratchIndices_, &g.map);
+        g.topology = mesh.topology;
+        g.smooth = smooth;
+        g.weightSlot = weightSlot;
+        g.vertexCount = positions.size();
+        g.renderVertexCount = scratch_.size();
         g.triVerts = (int)scratchIndices_.size();
+        const bool small = scratch_.size() <= kPoolMaxVerts && scratchIndices_.size() <= kPoolMaxVerts * 6;
+        if (small) {
+            if (g.vao) {  // was a big mesh: give its own buffers back
+                gl::DeleteBuffers(1, &g.vbo);
+                gl::DeleteBuffers(1, &g.ebo);
+                gl::DeleteVertexArrays(1, &g.vao);
+                g.vao = g.vbo = g.ebo = 0;
+            }
+            poolUpload(g);
+        } else {
+            if (g.pooled) poolFree(g);
+            if (!g.vao) {
+                gl::GenVertexArrays(1, &g.vao);
+                gl::GenBuffers(1, &g.vbo);
+                gl::GenBuffers(1, &g.ebo);
+                gl::BindVertexArray(g.vao);
+                gl::BindBuffer(GL_ARRAY_BUFFER, g.vbo);
+                gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ebo);  // part of the VAO state
+                setupMeshAttribs();
+            }
+            gl::BindVertexArray(g.vao);
+            gl::BindBuffer(GL_ARRAY_BUFFER, g.vbo);
+            gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(scratch_.size() * sizeof(RenderVertex)), scratch_.data(),
+                           GL_STATIC_DRAW);
+            gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ebo);
+            gl::BufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(scratchIndices_.size() * sizeof(uint32_t)),
+                           scratchIndices_.data(), GL_STATIC_DRAW);
+        }
         prof::count("uploaded vertices", (double)scratch_.size());
         g.key = key;
     }
@@ -640,8 +790,36 @@ void Renderer::drawMesh(uint32_t id, uint64_t key, const Mesh& mesh, const std::
     if (g.triVerts == 0) return;
     Mat4 normalMatrix = transpose(inverse(model));  // normals transform by (M^-1)^T, FoCG 5e ch. 7
     gl::UseProgram(meshProg_);
+    // Camera, lights and sampler units are the same for every object of a
+    // frame: set them once (1000 objects used to cost ~90 GL calls each).
+    if (meshFrameSerial_ != frameSerial_ || meshFrameParams_ != &f) {
+        meshFrameSerial_ = frameSerial_;
+        meshFrameParams_ = &f;
+        gl::UniformMatrix4fv(meshU_.viewProj, 1, GL_FALSE, f.viewProj.m);
+        for (int t = 0; t < TEX_COUNT; ++t) gl::Uniform1i(meshU_.tex[t], 2 + t);
+        gl::Uniform3f(meshU_.camPos, f.cameraPos.x, f.cameraPos.y, f.cameraPos.z);
+        gl::Uniform3f(meshU_.keyDir, f.keyLightDir.x, f.keyLightDir.y, f.keyLightDir.z);
+        gl::Uniform3f(meshU_.fillDir, f.fillLightDir.x, f.fillLightDir.y, f.fillLightDir.z);
+        gl::Uniform1i(meshU_.mode, f.shading);
+        gl::Uniform3f(meshU_.ambient, f.ambient.x, f.ambient.y, f.ambient.z);
+        int count = std::min((int)f.lights.size(), kMaxLights);
+        gl::Uniform1i(meshU_.lightCount, count);
+        for (int i = 0; i < count; ++i) {
+            const GpuLight& L = f.lights[i];
+            gl::Uniform3f(meshU_.lightPos[i], L.pos.x, L.pos.y, L.pos.z);
+            gl::Uniform3f(meshU_.lightDir[i], L.dir.x, L.dir.y, L.dir.z);
+            gl::Uniform3f(meshU_.lightColor[i], L.color.x, L.color.y, L.color.z);
+            gl::Uniform4f(meshU_.lightParams[i], (float)L.type, std::max(0.01f, L.range), L.cosInner, L.cosOuter);
+            gl::Uniform3f(meshU_.lightU[i], L.axisU.x, L.axisU.y, L.axisU.z);
+            gl::Uniform3f(meshU_.lightV[i], L.axisV.x, L.axisV.y, L.axisV.z);
+        }
+        gl::Uniform1i(meshU_.checker, 1);
+        gl::ActiveTexture(GL_TEXTURE0 + 1);
+        gl::BindTexture(GL_TEXTURE_2D, checkerTex_);
+        gl::ActiveTexture(GL_TEXTURE0);
+        for (unsigned& t : boundTex_) t = ~0u;
+    }
     gl::UniformMatrix4fv(meshU_.model, 1, GL_FALSE, model.m);
-    gl::UniformMatrix4fv(meshU_.viewProj, 1, GL_FALSE, f.viewProj.m);
     gl::UniformMatrix4fv(meshU_.normalMatrix, 1, GL_FALSE, normalMatrix.m);
     gl::Uniform3f(meshU_.color, mat.color.x, mat.color.y, mat.color.z);
     gl::Uniform3f(meshU_.emission, mat.emission.x, mat.emission.y, mat.emission.z);
@@ -654,42 +832,24 @@ void Renderer::drawMesh(uint32_t id, uint64_t key, const Mesh& mesh, const std::
     gl::Uniform2f(meshU_.uvScale, mat.uvScale.x, mat.uvScale.y);
     int texMask = 0;
     for (int t = 0; t < TEX_COUNT; ++t) {
-        gl::Uniform1i(meshU_.tex[t], 2 + t);
-        gl::ActiveTexture(GL_TEXTURE0 + 2 + t);
-        gl::BindTexture(GL_TEXTURE_2D, mat.textures[t] ? mat.textures[t] : checkerTex_);
+        const unsigned want = mat.textures[t] ? mat.textures[t] : checkerTex_;
+        if (boundTex_[t] != want) {  // most objects have no textures: skip redundant binds
+            gl::ActiveTexture(GL_TEXTURE0 + 2 + t);
+            gl::BindTexture(GL_TEXTURE_2D, want);
+            boundTex_[t] = want;
+        }
         if (mat.textures[t]) texMask |= 1 << t;
     }
     gl::ActiveTexture(GL_TEXTURE0);
     gl::Uniform1i(meshU_.texMask, texMask);
-    gl::Uniform3f(meshU_.camPos, f.cameraPos.x, f.cameraPos.y, f.cameraPos.z);
-    gl::Uniform3f(meshU_.keyDir, f.keyLightDir.x, f.keyLightDir.y, f.keyLightDir.z);
-    gl::Uniform3f(meshU_.fillDir, f.fillLightDir.x, f.fillLightDir.y, f.fillLightDir.z);
     gl::Uniform1f(meshU_.highlight, mat.highlight);
-    gl::Uniform1i(meshU_.mode, f.shading);
-    gl::Uniform3f(meshU_.ambient, f.ambient.x, f.ambient.y, f.ambient.z);
-    int count = std::min((int)f.lights.size(), kMaxLights);
-    gl::Uniform1i(meshU_.lightCount, count);
-    for (int i = 0; i < count; ++i) {
-        const GpuLight& L = f.lights[i];
-        gl::Uniform3f(meshU_.lightPos[i], L.pos.x, L.pos.y, L.pos.z);
-        gl::Uniform3f(meshU_.lightDir[i], L.dir.x, L.dir.y, L.dir.z);
-        gl::Uniform3f(meshU_.lightColor[i], L.color.x, L.color.y, L.color.z);
-        gl::Uniform4f(meshU_.lightParams[i], (float)L.type, std::max(0.01f, L.range), L.cosInner, L.cosOuter);
-        gl::Uniform3f(meshU_.lightU[i], L.axisU.x, L.axisU.y, L.axisU.z);
-        gl::Uniform3f(meshU_.lightV[i], L.axisV.x, L.axisV.y, L.axisV.z);
-    }
-    gl::Uniform1i(meshU_.checker, 1);
-    gl::ActiveTexture(GL_TEXTURE0 + 1);
-    gl::BindTexture(GL_TEXTURE_2D, checkerTex_);
-    gl::ActiveTexture(GL_TEXTURE0);
     // Push filled polygons slightly back so wireframe lines drawn on top of
     // them win the depth test.
     gl::Enable(GL_POLYGON_OFFSET_FILL);
     gl::PolygonOffset(1.0f, 1.0f);
-    gl::BindVertexArray(g.vao);
     const bool transparent = mat.transparent() && f.shading <= SHADE_LIT;
     if (transparent) gl::DepthMask(GL_FALSE);  // sorted back to front by the caller
-    gl::DrawElements(GL_TRIANGLES, g.triVerts, GL_UNSIGNED_INT, nullptr);
+    drawGpuMesh(g);
     if (transparent) gl::DepthMask(GL_TRUE);
     prof::count("draw calls", 1);
     prof::count("triangles drawn", g.triVerts / 3);
@@ -793,6 +953,62 @@ void Renderer::drawLineList(const std::vector<LineVertex>& v, unsigned mode, con
     gl::BindBuffer(GL_ARRAY_BUFFER, lineVbo_);
     gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(v.size() * sizeof(LineVertex)), v.data(), GL_STREAM_DRAW);
     drawBound(lineVao_, (int)v.size(), mode, f, model, depthTest, fadeRadius, fadeCenter, pointSize);
+}
+
+void Renderer::setEditPositions(uint64_t key, const std::vector<Vec3>& positions) {
+    if (!editVao_) {
+        gl::GenVertexArrays(1, &editVao_);
+        gl::GenBuffers(1, &editVbo_);
+        gl::BindVertexArray(editVao_);
+        gl::BindBuffer(GL_ARRAY_BUFFER, editVbo_);
+        gl::EnableVertexAttribArray(0);
+        gl::VertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), offsetPtr(0));
+        gl::DisableVertexAttribArray(1);  // colour comes from the constant attribute value
+        gl::BindVertexArray(0);
+    }
+    if (key == editPosKey_) return;
+    PROF_SCOPE("overlay upload");
+    gl::BindBuffer(GL_ARRAY_BUFFER, editVbo_);
+    gl::BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(positions.size() * sizeof(Vec3)), positions.data(), GL_DYNAMIC_DRAW);
+    editPosKey_ = key;
+}
+
+void Renderer::drawEditElements(int slot, uint64_t key, const std::vector<uint32_t>& indices, unsigned mode,
+                                Color color, const FrameParams& f, const Mat4& model, bool depthTest, float size) {
+    if (!editVao_) return;
+    EditBatch& b = editBatches_[slot];
+    gl::BindVertexArray(editVao_);
+    if (!b.ebo) gl::GenBuffers(1, &b.ebo);
+    gl::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, b.ebo);  // VAO state: bind before drawing
+    if (b.key != key) {
+        PROF_SCOPE("overlay upload");
+        gl::BufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(indices.size() * sizeof(uint32_t)), indices.data(),
+                       GL_DYNAMIC_DRAW);
+        b.count = (int)indices.size();
+        b.key = key;
+    }
+    if (b.count == 0) return;
+    gl::UseProgram(lineProg_);
+    gl::UniformMatrix4fv(lineU_.model, 1, GL_FALSE, model.m);
+    gl::UniformMatrix4fv(lineU_.viewProj, 1, GL_FALSE, f.viewProj.m);
+    gl::Uniform4f(lineU_.tint, 1, 1, 1, 1);
+    gl::Uniform1f(lineU_.fadeRadius, 0.0f);
+    gl::Uniform1f(lineU_.pointSize, size);
+    gl::Uniform1i(lineU_.roundPoints, mode == GL_POINTS ? 1 : 0);
+    gl::VertexAttrib4f(1, color.r, color.g, color.b, color.a);
+    if (depthTest) gl::Enable(GL_DEPTH_TEST);
+    else gl::Disable(GL_DEPTH_TEST);
+    gl::DepthMask(GL_FALSE);
+    if (mode == GL_TRIANGLES) {  // face highlight: pulled towards the camera
+        gl::Enable(GL_POLYGON_OFFSET_FILL);
+        gl::PolygonOffset(-1.0f, -1.0f);
+    }
+    gl::DrawElements(mode, b.count, GL_UNSIGNED_INT, nullptr);
+    if (mode == GL_TRIANGLES) gl::Disable(GL_POLYGON_OFFSET_FILL);
+    prof::count("draw calls", 1);
+    gl::DepthMask(GL_TRUE);
+    gl::Enable(GL_DEPTH_TEST);
+    gl::BindVertexArray(0);
 }
 
 void Renderer::drawLinesCached(int slot, uint64_t key, const std::vector<LineVertex>& v, const FrameParams& f,
@@ -941,8 +1157,7 @@ void Renderer::drawMeshMask(uint32_t id, uint64_t key, const Mesh& mesh, const s
     gl::UniformMatrix4fv(maskU_.model, 1, GL_FALSE, model.m);
     gl::UniformMatrix4fv(maskU_.viewProj, 1, GL_FALSE, f.viewProj.m);
     gl::Uniform1f(maskU_.value, value);
-    gl::BindVertexArray(g.vao);
-    gl::DrawElements(GL_TRIANGLES, g.triVerts, GL_UNSIGNED_INT, nullptr);
+    drawGpuMesh(g);
     prof::count("draw calls", 1);
 }
 
@@ -977,11 +1192,7 @@ void Renderer::purge(const Scene& scene) {
         if (o.isMesh()) alive.insert(o.id);
     for (auto it = cache_.begin(); it != cache_.end();) {
         if (!alive.count(it->first)) {
-            GpuMesh& g = it->second;
-            gl::DeleteBuffers(1, &g.vbo);
-            gl::DeleteBuffers(1, &g.edgeVbo);
-            gl::DeleteVertexArrays(1, &g.vao);
-            gl::DeleteVertexArrays(1, &g.edgeVao);
+            releaseMesh(it->second);  // (the index buffer used to leak here)
             it = cache_.erase(it);
         } else {
             ++it;

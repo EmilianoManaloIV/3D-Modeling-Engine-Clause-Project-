@@ -26,6 +26,7 @@ set(CORE_SOURCES
     src/csg.cpp
     src/expr.cpp
     src/meshedit.cpp
+    src/meshtools.cpp
     src/image_load.cpp
     src/input_map.cpp
     src/bvh.cpp
@@ -36,11 +37,15 @@ set(APP_SOURCES
     src/editor.cpp
     src/editor_actions.cpp
     src/editor_ui.cpp
+    src/editor_props.cpp
+    src/editor_commands.cpp
     src/editor_render.cpp
     src/editor_gizmo.cpp
     src/editor_bench.cpp
+    src/editor_stress.cpp
     src/editor_meshops.cpp
     src/editor_editmode.cpp
+    src/editor_tools.cpp
     src/editor_renderview.cpp
     src/gpu_tracer.cpp
     src/hwrt.cpp
@@ -72,7 +77,7 @@ else()
 endif()
 
 if(WIN32)
-    target_link_libraries(Modeler3D PRIVATE opengl32 gdi32 user32 shell32 comdlg32)
+    target_link_libraries(Modeler3D PRIVATE opengl32 gdi32 user32 shell32 comdlg32 psapi)
     if(MINGW)
         # Fully static: the .exe runs without any MinGW DLLs next to it.
         target_link_options(Modeler3D PRIVATE -static -static-libgcc -static-libstdc++)

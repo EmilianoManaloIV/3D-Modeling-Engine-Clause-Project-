@@ -51,6 +51,58 @@ UvMap uvMapFor(const Mesh& m, int f) {
 
 Edge makeEdge(int a, int b) { return a < b ? Edge(a, b) : Edge(b, a); }
 
+CornerFans cornerFans(const Mesh& m, const std::vector<int>& facesIn) {
+    CornerFans cf;
+    std::unordered_set<int> seen;
+    for (int f : facesIn)
+        if (f >= 0 && f < (int)m.faces.size() && m.faces[f].size() >= 3 && seen.insert(f).second) cf.faces.push_back(f);
+    int total = 0;
+    for (int f : cf.faces) {
+        cf.faceStart.push_back(total);
+        total += (int)m.faces[f].size();
+    }
+    std::vector<int> parent(total);
+    for (int i = 0; i < total; ++i) parent[i] = i;
+    auto find = [&](int x) {
+        while (parent[x] != x) x = parent[x] = parent[parent[x]];
+        return x;
+    };
+    // Directed edge a -> b of a selected face -> (list index, corner of a).
+    std::unordered_map<uint64_t, std::pair<int, int>> half;
+    half.reserve((size_t)total * 2);
+    for (int li = 0; li < (int)cf.faces.size(); ++li) {
+        const auto& fv = m.faces[cf.faces[li]];
+        for (size_t i = 0; i < fv.size(); ++i) half[directedKey(fv[i], fv[(i + 1) % fv.size()])] = {li, (int)i};
+    }
+    for (int li = 0; li < (int)cf.faces.size(); ++li) {
+        const auto& fv = m.faces[cf.faces[li]];
+        const int n = (int)fv.size();
+        for (int i = 0; i < n; ++i) {
+            auto it = half.find(directedKey(fv[(i + 1) % n], fv[i]));  // twin b -> a in another selected face
+            if (it == half.end() || it->second.first == li) continue;
+            const int tl = it->second.first, tc = it->second.second, tn = (int)m.faces[cf.faces[tl]].size();
+            // a: corner i here, corner tc+1 there; b: corner i+1 here, corner tc there.
+            parent[find(cf.faceStart[li] + i)] = find(cf.faceStart[tl] + (tc + 1) % tn);
+            parent[find(cf.faceStart[li] + (i + 1) % n)] = find(cf.faceStart[tl] + tc);
+        }
+    }
+    cf.fan.assign(total, -1);
+    std::unordered_map<int, int> ids;
+    for (int li = 0; li < (int)cf.faces.size(); ++li) {
+        const auto& fv = m.faces[cf.faces[li]];
+        for (int i = 0; i < (int)fv.size(); ++i) {
+            const int root = find(cf.faceStart[li] + i);
+            auto it = ids.find(root);
+            if (it == ids.end()) {
+                it = ids.emplace(root, cf.count++).first;
+                cf.fanVertex.push_back(fv[i]);
+            }
+            cf.fan[cf.faceStart[li] + i] = it->second;
+        }
+    }
+    return cf;
+}
+
 std::vector<Edge> edgesFromVerts(const Mesh& m, const std::vector<char>& vsel) {
     std::vector<Edge> out;
     if (vsel.size() != m.verts.size()) return out;
@@ -89,15 +141,9 @@ bool extrudeEdges(Mesh& m, const std::vector<Edge>& edges, std::vector<Edge>& ne
     newEdges.clear();
     if (edges.empty()) return false;
     const bool uvs = m.hasUVs(), weights = m.hasWeights();
-    // Owner face (and corner) of each directed edge.
-    struct Owner {
-        int face, corner;
-    };
-    std::unordered_map<uint64_t, Owner> owner;
-    for (int f = 0; f < (int)m.faces.size(); ++f) {
-        const auto& face = m.faces[f];
-        for (size_t i = 0; i < face.size(); ++i) owner[directedKey(face[i], face[(i + 1) % face.size()])] = {f, (int)i};
-    }
+    // Owner face (and corner) of each directed edge: looked up per selected
+    // edge in the vertex -> faces index (no hash map of every half-edge).
+    const VertexFaces vf(m);
     std::unordered_map<int, int> dup;
     auto copyOf = [&](int v) {
         auto it = dup.find(v);
@@ -116,14 +162,17 @@ bool extrudeEdges(Mesh& m, const std::vector<Edge>& edges, std::vector<Edge>& ne
     for (const Edge& e : edges) {
         int a = e.first, b = e.second;
         // Prefer the face that has the edge as a boundary (only one owner).
-        auto ab = owner.find(directedKey(a, b)), ba = owner.find(directedKey(b, a));
-        if (ab == owner.end() && ba == owner.end()) continue;
-        if (ab == owner.end()) {
+        std::pair<int, int> ab, ba;
+        const bool hasAb = vf.directed(a, b, &ab), hasBa = vf.directed(b, a, &ba);
+        if (!hasAb && !hasBa) continue;
+        if (!hasAb) {
             std::swap(a, b);
             ab = ba;
         }
         // The face runs a -> b: the new quad runs b -> a -> a' -> b'.
-        const Owner o = ab->second;
+        struct {
+            int face, corner;
+        } o{ab.first, ab.second};
         int a2 = copyOf(a), b2 = copyOf(b);
         m.faces.push_back({b, a, a2, b2});
         if (uvs) {
@@ -162,43 +211,53 @@ bool insetFaces(Mesh& m, const std::vector<int>& faces, const InsetParams& p, st
     std::vector<std::vector<Vec2>> newUVs;
     std::vector<int> moved;  // inner vertices of all regions (selected afterwards)
 
-    for (const auto& region : regions) {
+    for (const auto& regionIn : regions) {
+        // Per fan of corners (not per vertex): a selection touching itself at
+        // one vertex gets an inner copy per side and stays manifold.
+        const CornerFans cf = cornerFans(m, regionIn);
+        const std::vector<int>& region = cf.faces;
+        if (region.empty()) continue;
         // Directed edges of the region; boundary = reverse not in the region.
         std::unordered_set<uint64_t> directed;
         for (int f : region) {
             const auto& face = m.faces[f];
             for (size_t i = 0; i < face.size(); ++i) directed.insert(directedKey(face[i], face[(i + 1) % face.size()]));
         }
-        // Per-vertex region normal (area weighted) and boundary links.
-        std::unordered_map<int, Vec3> normal;
-        std::unordered_map<int, int> nextOf, prevOf;  // along the boundary, in face winding order
-        for (int f : region) {
-            const auto& face = m.faces[f];
-            Vec3 n = faceNormalRaw(m, face);
-            for (size_t i = 0; i < face.size(); ++i) {
-                normal[face[i]] += n;
-                int a = face[i], b = face[(i + 1) % face.size()];
-                if (!directed.count(directedKey(b, a))) {
-                    nextOf[a] = b;
-                    prevOf[b] = a;
+        // Per-fan region normal (area weighted) and border neighbours.
+        std::vector<Vec3> fanN(cf.count);
+        std::vector<int> nextOf(cf.count, -1), prevOf(cf.count, -1);  // along the border, in face winding order
+        for (int li = 0; li < (int)region.size(); ++li) {
+            const auto& face = m.faces[region[li]];
+            const int n = (int)face.size();
+            Vec3 nrm = faceNormalRaw(m, face);
+            for (int i = 0; i < n; ++i) {
+                fanN[cf.of(li, i)] += nrm;
+                int va = face[i], vb = face[(i + 1) % n];
+                if (!directed.count(directedKey(vb, va))) {
+                    nextOf[cf.of(li, i)] = vb;
+                    prevOf[cf.of(li, (i + 1) % n)] = va;
                 }
             }
         }
-        for (auto& kv : normal) kv.second = normalize(kv.second);
+        for (Vec3& nrm : fanN) nrm = normalize(nrm);
 
-        // New position of every region vertex: border vertices move inwards
-        // by `thickness` (measured perpendicular to their border edges); all
-        // region vertices move by `depth` along the region normal.
-        std::unordered_map<int, int> inner;  // border vertex -> its inset copy
+        // New position of every fan: border fans get an inset copy, moved
+        // inwards by `thickness` (perpendicular to their border edges); all
+        // move by `depth` along the region normal.
+        std::vector<int> inner(cf.count, -1);
         std::unordered_map<int, Vec3> target;
-        for (const auto& kv : normal) {
-            int v = kv.first;
-            Vec3 n = kv.second;
+        for (int fan = 0; fan < cf.count; ++fan) {
+            const int v = cf.fanVertex[fan];
+            const Vec3 nrm = fanN[fan];
             Vec3 pos = m.verts[v];
-            auto nx = nextOf.find(v), pv = prevOf.find(v);
-            if (nx != nextOf.end() && pv != prevOf.end()) {
-                Vec3 ein = normalize(pos - m.verts[pv->second]), eout = normalize(m.verts[nx->second] - pos);
-                Vec3 n1 = normalize(cross(n, ein)), n2 = normalize(cross(n, eout));  // inward in-plane normals
+            if (nextOf[fan] >= 0 || prevOf[fan] >= 0) {
+                // A fan normally has a border edge on each side; on broken
+                // input it can have one only (then that edge sets the direction).
+                Vec3 ein = prevOf[fan] >= 0 ? normalize(pos - m.verts[prevOf[fan]]) : Vec3();
+                Vec3 eout = nextOf[fan] >= 0 ? normalize(m.verts[nextOf[fan]] - pos) : Vec3();
+                if (prevOf[fan] < 0) ein = eout;
+                if (nextOf[fan] < 0) eout = ein;
+                Vec3 n1 = normalize(cross(nrm, ein)), n2 = normalize(cross(nrm, eout));  // inward in-plane normals
                 Vec3 d = n1 + n2;
                 float len = length(d);
                 d = len > 1e-6f ? d / len : n1;
@@ -211,16 +270,17 @@ bool insetFaces(Mesh& m, const std::vector<int>& faces, const InsetParams& p, st
                     BoneWeights w = m.weights[v];
                     m.weights.push_back(w);
                 }
-                inner[v] = copy;
-                target[copy] = pos + n * p.depth;
+                inner[fan] = copy;
+                target[copy] = pos + nrm * p.depth;
             } else {
-                target[v] = pos + n * p.depth;  // interior vertex: only the depth offset
+                target[v] = pos + nrm * p.depth;  // interior vertex: only the depth offset
             }
         }
 
         // Ring faces along the border, then re-point the region's faces to
         // the inset copies (with their UVs shifted by the same offset).
-        for (int f : region) {
+        for (int li = 0; li < (int)region.size(); ++li) {
+            const int f = region[li];
             const auto face = m.faces[f];
             const size_t n = face.size();
             UvMap map = uvMapFor(m, f);
@@ -228,22 +288,22 @@ bool insetFaces(Mesh& m, const std::vector<int>& faces, const InsetParams& p, st
             if (uvs) {
                 innerUV = m.uvs[f];
                 for (size_t i = 0; i < n; ++i) {
-                    auto it = inner.find(face[i]);
-                    if (it == inner.end()) continue;
-                    Vec3 off = target[it->second] - m.verts[face[i]];
-                    off -= normal[face[i]] * dot(off, normal[face[i]]);  // in-plane part only
+                    const int fan = cf.of(li, (int)i);
+                    if (inner[fan] < 0) continue;
+                    Vec3 off = target[inner[fan]] - m.verts[face[i]];
+                    off -= fanN[fan] * dot(off, fanN[fan]);  // in-plane part only
                     innerUV[i] = map.apply(m.uvs[f][i], off);
                 }
             }
             for (size_t i = 0; i < n; ++i) {
-                int a = face[i], b = face[(i + 1) % n];
-                if (directed.count(directedKey(b, a))) continue;  // interior edge: no ring face
-                newFaces.push_back({a, b, inner[b], inner[a]});
+                int va = face[i], vb = face[(i + 1) % n];
+                if (directed.count(directedKey(vb, va))) continue;  // interior edge: no ring face
+                newFaces.push_back({va, vb, inner[cf.of(li, (int)((i + 1) % n))], inner[cf.of(li, (int)i)]});
                 if (uvs) newUVs.push_back({m.uvs[f][i], m.uvs[f][(i + 1) % n], innerUV[(i + 1) % n], innerUV[i]});
             }
             for (size_t i = 0; i < n; ++i) {
-                auto it = inner.find(face[i]);
-                if (it != inner.end()) m.faces[f][i] = it->second;
+                const int c = inner[cf.of(li, (int)i)];
+                if (c >= 0) m.faces[f][i] = c;
             }
             if (uvs) m.uvs[f] = innerUV;
         }

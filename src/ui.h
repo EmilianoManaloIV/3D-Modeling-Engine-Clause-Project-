@@ -80,7 +80,8 @@ public:
     void popClip();
 
     // Widgets
-    bool button(uint32_t id, const Rect& r, const std::string& label, bool toggled = false);
+    // `dim`: drawn greyed out (still clickable, so the caller can explain why).
+    bool button(uint32_t id, const Rect& r, const std::string& label, bool toggled = false, bool dim = false);
     bool selectable(uint32_t id, const Rect& r, const std::string& label, bool selected, bool active);
     bool swatch(uint32_t id, const Rect& r, Color c, bool selected);
     // Drag horizontally to change; click (without dragging) to type a value.
@@ -92,6 +93,16 @@ public:
     // Returns true when the user commits an edit (Enter or clicking away).
     bool textField(uint32_t id, const Rect& r, std::string& value);
     void header(const Rect& r, const std::string& label);
+    // Section header with a +/- marker; returns true when clicked (toggle it).
+    bool collapsingHeader(uint32_t id, const Rect& r, const std::string& label, bool open);
+    // A text field that always has the keyboard (search boxes). `value` follows
+    // the typing live. Returns 1 on Enter, -1 on Esc, 0 otherwise.
+    int searchField(uint32_t id, const Rect& r, std::string& value);
+    // Tooltip for the widget drawn last: shown after the mouse rests on it.
+    void tooltip(const std::string& text);
+    void setTime(double seconds) { time_ = seconds; }
+    bool tooltipsEnabled = true;
+    float tooltipDelay = 0.55f;
 
     bool hovered(const Rect& r) const;
     bool isActive() const { return activeId_ != 0; }
@@ -126,4 +137,15 @@ private:
     uint32_t tabFromId_ = 0;        // field that was left with Tab this frame
     float dragStartX_ = 0, dragStartValue_ = 0;
     bool dragMoved_ = false;
+    // Tooltips
+    Rect lastRect_;
+    uint32_t lastId_ = 0, tipId_ = 0;
+    double time_ = 0, tipStart_ = 0;
+    bool tipSeen_ = false;
+    std::string tipText_;
+    float screenW_ = 0, screenH_ = 0;
+    void noteWidget(uint32_t id, const Rect& r) {
+        lastId_ = id;
+        lastRect_ = r;
+    }
 };

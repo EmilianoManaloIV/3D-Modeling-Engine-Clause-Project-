@@ -1,0 +1,7 @@
+tool bevel edges
+base two cubes
+problem face 12 repeats a corner
+params width 0.0226663 segments 1 profile 0.779378 clamp 0
+faces 0 4
+edges 3 16 10 15 13 27 19 20 28 29
+verts 3 9 14 17 19 20 21 30 32

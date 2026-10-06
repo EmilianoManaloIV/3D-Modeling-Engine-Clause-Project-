@@ -21,6 +21,15 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
 
 ## What it can do
 
+**The interface follows the modeling pipeline.** The top bar holds the menus (File, Edit, View, Add)
+and five workspaces in pipeline order: **1 Model > 2 Texture > 3 Rig > 4 Light > 5 Render**
+(`Alt+1` .. `Alt+5`). Each workspace's left panel shows only the tools for that stage, in collapsible
+sections, and switches the viewport to fit (Texture opens the UV editor, Light uses the Lit view,
+Render starts the path tracer). The right panel is the scene list plus Properties in tabs (Object, and
+Material / Light / Camera / Particles depending on the object). Every button has a tooltip with its
+shortcut, and **every command is in the command palette** (`Ctrl+K` or `Shift+Space`: type a few
+letters, Enter runs it).
+
 **Modeling**
 - **Parametric shapes**: cube, sphere, cylinder, cone/frustum, plane, torus, stairs, gear, pipe and
   spring. Every shape keeps its recipe, so you can change radius, segments, teeth, coils and so on at
@@ -42,7 +51,28 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
   border.
 - **Type into any number field**: click it (or Tab to the next field) and type a value or an
   expression such as `2*pi`, `1/3`, `(4+2)^2` or a relative change: `+=0.5`, `*=2`. Caret, Home/End,
-  Ctrl+A and Backspace/Delete work as usual. Dragging sideways still works too.
+  Ctrl+A and Backspace/Delete work as usual. Dragging sideways still works too. Results that are not a
+  number (`1/0`, `0/0`) are rejected.
+- **Adding vertices**: **Loop cut** (`Ctrl+R`: a new edge loop across the edge under the mouse, any
+  number of cuts), **Subdivide edges** (split the selected edges; faces with two cut edges are split
+  across, a face with every edge cut becomes quads), **Connect** (`J`: split faces between selected
+  vertices) and **Poke** (a centre vertex per face, raised or sunk).
+- **Adding faces**: **Bevel** (`Ctrl+B`: edges, or corners in vertex mode; the mouse sets the width,
+  the wheel the segments; *Profile* goes from a flat chamfer through round to the original corner),
+  **Bridge** (`Alt+B`: two edge loops become a tube; two groups of faces become a tunnel between them,
+  with segments and twist; works across separate pieces, e.g. after **Join** `Ctrl+J`) and **Fill**
+  (`Alt+F`: a face across a border loop).
+- **Push through** (`Alt+E`): punches the selected faces through to the other side of the shape: the
+  opposite face gets a matching hole and a tunnel joins the two, like pushing a window through a wall.
+  *Inset* in the Last operation panel leaves a frame around the hole; if both sides were already
+  inset, the two insets are joined directly.
+- **Merge** (`M`, to the centre) and **Collapse groups** (each connected group of selected vertices
+  becomes one vertex).
+- **Selection tools**: **edge loop** (double-click an edge), **edge ring**, **select more / less**
+  (`Ctrl+=` / `Ctrl+-`), and `[` / `]` to step through objects from the keyboard.
+- Every tool with settings becomes the **Last operation**: change a value in its panel and the tool
+  runs again on the original mesh, as in Blender. All of them keep UVs and bone weights, and a closed
+  mesh stays closed (checked by the unit tests with exact volumes, and by the stress test's fuzzer).
 
 **Booleans and the n-gon solver** (*Mesh* tab)
 - **Union / Difference / Intersection** of closed meshes, using BSP trees. Select the cutter mesh(es),
@@ -170,16 +200,32 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
   unit-tested.
 - **Keymaps:** Unity (default) or Blender (G/R/S modal transforms) presets, chosen in the *Keys* tab.
 
+**Laptops, trackpads and small keyboards** (*Settings > Input*)
+- **Trackpad navigation**: two-finger scroll orbits, Shift + two fingers pans, pinch (or Ctrl + scroll)
+  zooms. Horizontal scrolling works on Windows and Linux. The editor suggests the setting the first
+  time it sees trackpad-style scrolling.
+- **No middle or right button needed**: Alt + drag orbits, Alt + Ctrl + drag pans, Alt + Shift + drag
+  zooms; or drag the **scene gizmo** to orbit and the **Pan** / **Zoom** pads under it.
+- **Fly mode without holding a button**: `Shift+F`, then W A S D Q E, drag or Alt + arrows to look,
+  Esc ends.
+- **No F-keys or numpad needed** (60-65% keyboards): every F-key action has a second default binding
+  (`Shift+/` help, `Ctrl+I` stats, `Ctrl+Shift+R` render, `Ctrl+Shift+P` screenshot), views use the
+  top-row digits, the command palette works with `Ctrl+J/K` or `Ctrl+N/P` instead of arrow keys,
+  `Alt+arrows` orbit and `=` / `-` zoom.
+- **Keyboard-only modeling**: type numbers into modal transforms (`G`, `X`, `2`, Enter moves 2 units
+  along X; also for rotate and scale), pick objects with `[` `]`, run anything from the palette.
+- **UI size** (`A-` / `A+` in Settings, 1-6) and tooltips on / off.
+
 **Settings**
-- **Key rebinding** (*Keys* tab): every shortcut, fly key, camera arrow key and transform axis key is
+- **Key rebinding** (*Settings > Keys*): every shortcut, fly key, camera arrow key and transform axis key is
   an action with two binding slots. Click a slot and press a key or combination (Ctrl / Shift / Alt).
   Esc cancels, Backspace clears it, and *Find* filters the list. A key that is already used in the
   same context moves to the new action, and the status bar names the action that lost it. Fly keys can
   share letters with tool shortcuts because they only apply while the right button is held.
-- **Camera** (*Camera* tab): orbit and mouse-look sensitivity, invert X / Y, pan, zoom, fly and
+- **Navigation** (*Settings > Navigate*): orbit and mouse-look sensitivity, invert X / Y, pan, zoom, fly and
   arrow-key speeds, the Shift boost, fly acceleration on / off, field of view and the duration of
   animated view changes.
-- Bindings and camera settings are saved in `Modeler3D.cfg` next to the executable.
+- Bindings, navigation and input settings are saved in `Modeler3D.cfg` next to the executable.
 
 **Multithreading and GPU use**
 - A **job system** (a thread pool with parallel-for and task groups) uses every CPU core for CPU
@@ -241,24 +287,58 @@ You can also pass a file to open: `Modeler3D chair.m3d` or `Modeler3D model.obj`
 | `Tab` | Object / Edit mode |
 | `1` / `2` / `3` (Edit mode) | Vertex / edge / face selection |
 | `I` (Edit mode) | Inset the selected faces (mouse sets width; click confirms) |
+| `Ctrl+B` / `Ctrl+R` (Edit mode) | Bevel (mouse = width, wheel = segments) / loop cut under the mouse |
+| `J` / `M` / `Alt+F` / `Alt+B` (Edit mode) | Connect / merge / fill / bridge |
+| `Alt+E` (Edit mode) | Push through: hole + tunnel to the other side |
+| Double-click an edge / `Ctrl+=` `Ctrl+-` (Edit mode) | Select its loop (Ctrl: ring) / grow, shrink the selection |
+| `Ctrl+K` or `Shift+Space` | Command palette: search and run any command |
+| `Alt+1` .. `Alt+5` | Workspaces: Model, Texture, Rig, Light, Render |
+| `Ctrl+J` / `[` `]` | Join meshes / previous, next object |
+| `Alt+arrows` / `=` `-` / `Shift+F` | Orbit / zoom / fly mode (no mouse button needed) |
+| While moving (G / handles): type `2`, `-1.5`... | Exact value along the locked axis (Enter confirms) |
 | `0` / `Ctrl+Alt+0` | Look through the render camera / move it to the current view |
 | Drag a row in the hierarchy | Parent (onto a row), reorder (between rows), unparent (below the list) |
 | `Ctrl+P` / `Alt+P` | Parent to the active object / clear parent |
 | `U` / `Space` / `F` | Smart unwrap / play-pause particles / frame selection |
 | `1` `3` `7` (Ctrl = opposite), `5` | Front / right / top view, perspective-orthographic (Object mode) |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
-| `Ctrl+S` / `Ctrl+O` | Save / load the file named in the File tab |
-| `F3` / `F12` / `F1` | Performance overlay / PNG screenshot / help |
-| `F5` | Path-traced render on / off |
+| `Ctrl+S` / `Ctrl+O` | Save / open (the file name is in the File menu) |
+| `F3` / `F12` / `F1` (or `Ctrl+I` / `Ctrl+Shift+P` / `Shift+/`) | Performance overlay / PNG screenshot / help |
+| `F5` (or `Ctrl+Shift+R`) | Path-traced render on / off |
 | Ctrl / Shift + click in the hierarchy | Toggle one object / select a range |
 
-All of these are defaults. Change any of them in the **Keys** tab.
+All of these are defaults. Change any of them in **Settings > Keys**.
 
-The left panel has tabs: **Create, Mesh, UV, Rig, FX, Render, File, Keys, Camera**. To change a number in the right
-panel, drag it sideways (hold Shift for fine steps) or click it and type a value or expression;
-Tab moves to the next field.
+To change a number, drag it sideways (hold Shift for fine steps) or click it and type a value or
+expression; Tab moves to the next field. Rest the mouse on any button to see what it does and its
+shortcut.
 
 ## Screenshots
+
+### Modeling tools: a rounded bevel and the Last operation panel
+
+![A cube with every edge beveled with 4 segments; the Model workspace with its Select / Add geometry tools and the Last operation panel](docs/bevel.png)
+
+*Model workspace in Edit mode: every edge selected, `Ctrl+B`, then Width 0.3 and Segments 4 typed into
+the Last operation panel.*
+
+### Push through
+
+![A box with a framed square hole punched through it, and the Push through settings](docs/push-through.png)
+
+*The top face pushed through with Inset 0.5: a frame, a hole on both sides and a tunnel between them.*
+
+### Command palette
+
+![The command palette listing Loop cut and Select edge loop for the query "loop"](docs/command-palette.png)
+
+*`Ctrl+K` (or `Shift+Space`): every command by name, with its shortcut, for keyboard-only use.*
+
+### Texture workspace and Settings
+
+![The Texture workspace with unwrap tools, the UV editor and the Material properties tab](docs/workspace-texture.png)
+
+![Settings > Input: trackpad navigation, navigation pads, UI size, tooltips and keyboard notes](docs/settings-input.png)
 
 ### Materials, render camera and area light
 
@@ -282,7 +362,7 @@ camera at f/2 with depth of field.*
 
 ![The showcase scene path-traced on the GPU at 256 samples per pixel, with the Render tab settings](docs/path-tracing.png)
 
-*`Modeler3D --demo 1`, Render tab: GPU path tracing with soft shadows, glossy reflections and the glowing
+*`Modeler3D --demo 1`, Render workspace (`Alt+5`): GPU path tracing with soft shadows, glossy reflections and the glowing
 lamp lighting the floor. The panel shows progress, samples/s and the sampling settings.*
 
 ### Booleans
@@ -325,8 +405,16 @@ loading a 131k-quad scene from 4.5 s to 0.13 s. The report also compares 1 threa
 CPU with GPU path tracing. On the test laptop (Intel Iris Xe, 12 threads), the GPU path traces about 7x
 faster than all 12 CPU threads, and the CPU tracer scales about 5x from 1 to 12 threads. Round 6 added a
 picking BVH (edit-mode picking on a 262k-triangle mesh about 2500x faster) and a 3x faster JPEG decoder.
-Run it yourself
-with `Modeler3D --benchmark report.md`.
+Run it yourself with `Modeler3D --benchmark report.md`.
+
+Round 7 measured the previous version and this one back to back: 1000 objects and dragging every
+vertex of a 262k-triangle mesh are now about 2x faster, posing a skinned mesh 2x. The **stress test**
+(`Modeler3D --stress report.md`, [docs/stress-report.md](docs/stress-report.md)) pushes every limit:
+meshes up to 4.1 million triangles (still above 30 fps when idle), 50,000 objects (360 MB instead of 5 GB),
+parent chains 50,000 deep, 6,000 random modeling operations, 3,000 frames of random input and every
+window size from 320x240 to 4K. It found and drove the fixes for an O(n^3) naming bug, a boolean that ran
+out of memory, non-manifold results of several tools on unusual selections, and more - see
+[docs/performance.md](docs/performance.md#round-7-stress-testing).
 
 ## Building from source
 
@@ -339,8 +427,8 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 (`sudo apt install build-essential cmake libx11-dev libgl-dev` on Debian/Ubuntu), then run
 `./build_linux.sh`. The result is `dist/linux/Modeler3D`.
 
-**Tests:** configure with `-DMODELER_BUILD_TESTS=ON` and run `modeler_tests`. Its 1738 checks
-(1734 on Linux, where the DXR test is skipped) cover:
+**Tests:** configure with `-DMODELER_BUILD_TESTS=ON` and run `modeler_tests`. Its 1984 checks
+(1980 on Linux, where the DXR test is skipped) cover:
 - math and TRS decomposition
 - primitives and all 10 parametric shapes (closed, consistently oriented, outward-facing)
 - Catmull-Clark (including UVs and weights), extrude / delete
@@ -356,6 +444,16 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 - the BVH (against brute force, and parallel against serial builds), and the path tracer's lighting,
   shadows, emission and progressive renderer
 - key bindings: parsing, presets without conflicts, rebinding and config round trips
+- the round-7 tools with exact volumes: loop cut, subdivide, connect, poke, bevel (one edge, all 12
+  edges of a cube, rounded, a corner), bridge (loops and face groups), fill, merge, push through
+  (with a frame and through two matching insets, genus checked), join with a mirror transform
+- position-only render refresh equals a full rebuild; hierarchies deeper than the old 256 limit;
+  parallel scene saving round-trips exactly; F-key-free bindings in both keymaps
+- 23 failures found by the stress test's fuzzer, replayed from `tests/data/fuzz` (each must now give a
+  valid mesh that stays closed), and the boolean that ran out of memory
+
+`M3D_REPLAY=tests/data/fuzz/fuzz_fail_02 modeler_tests` replays one case; `M3D_FUZZ_TRACE=1
+Modeler3D --stress r.md --stress-only D` dumps new ones.
 - the expression parser for typed values, edge extrusion and face inset (closed results, exact
   volumes), picking BVH against brute force, hierarchy drag and drop (including refused cycles)
 - image decoders against reference PNGs (every color type and bit depth, Adam7) and JPEGs, the
@@ -394,6 +492,10 @@ The project also opens directly in CLion (`CMakeLists.txt`); pick the `Modeler3D
 | Job system / thread pool, parallel loops | `jobs.cpp` | GEA Vol. I ch. 4 (parallelism and concurrency), sec. 8.6 |
 | Input re-mapping, context-sensitive controls | `input_map.cpp` | GEA Vol. I sec. 9.5 (game engine HID systems) |
 | GPU timer queries, in-game profiling | `gpu_tracer.cpp` (`GpuTimer`) | GEA Vol. I sec. 10.8 |
+| Bevel, loop cut, bridge, push through (polygon mesh topology) | `meshtools.cpp` | FoCG sec. 12.1 |
+| Pool allocation of GPU buffers (sub-allocated ranges) | `Renderer::poolUpload` | GEA Vol. I sec. 6.2 (memory management, pool allocators) |
+| Commands, menus, palette (one action table for UI and input) | `editor_commands.cpp` | GEA Vol. I sec. 9.5 (input re-mapping), ch. 10 (in-game menus) |
+| Stress / fuzz testing | `editor_stress.cpp` | GEA Vol. I ch. 2 (tools of the trade), ch. 10 (debugging) |
 | Microfacet BRDF (GGX), Fresnel, refraction, glass | `pathtracer.cpp`, `hwrt.hlsl` | FoCG sec. 4.8 (refraction), ch. 14 (physics-based rendering) |
 | Thin-lens camera, depth of field | `rt::primaryRay` in `pathtracer.cpp` | FoCG sec. 13.4.3 (depth of field) |
 | Area lights, soft shadows | `pathtracer.cpp` | FoCG sec. 13.4.2, 14.4 |
@@ -428,6 +530,11 @@ src/
   editor_bench.cpp    --benchmark scenarios and report
   editor_meshops.cpp  Boolean and n-gon solver commands
   editor_renderview.cpp  path-traced viewport, render settings, GPU reporting
+  editor_commands.cpp command registry, workspaces, command palette, top bar menus, Settings page
+  editor_props.cpp    scene outliner (drag & drop) and the Properties tabs
+  editor_tools.cpp    edit-mode tools on meshtools: bevel, loop cut, bridge, push through, merge, join
+  editor_stress.cpp   --stress: mesh / object / hierarchy limits, tool and input fuzzing, layout extremes
+  meshtools.*         subdivide / loop cut / connect / poke / bevel / bridge / fill / push through / merge
   jobs.*              job system (thread pool, parallel-for, task groups)
   polygon.*           n-gon solver: ear-clipping triangulation, weld / T-junction clean-up, tris->quads
   csg.*               BSP-tree boolean operations
@@ -446,7 +553,7 @@ src/
   shaders/hwrt.hlsl   the DXR tracer's compute shader; hwrt_shader.inl is its compiled DXIL
 tools/compile_hwrt_shader.py  recompiles hwrt.hlsl with dxc from the Windows SDK
 docs/                 screenshots, performance.md, benchmark-report.md
-tests/tests.cpp       unit tests (+ tests_round5.inc, tests_round6.inc, data/ test images)
+tests/tests.cpp       unit tests (+ tests_round5-7.inc, data/ test images)
 ```
 
 Sample scenes for a quick tour: `Modeler3D --demo 1` (showcase), `--demo 3` (UVs), `--demo 4` (rig),

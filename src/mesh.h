@@ -128,11 +128,27 @@ struct RenderVertex {
     Vec2 uv;
     float weight;
 };
+// How each render vertex was made, so a change of positions only (vertex
+// drag, skinning) can refresh positions / normals / UVs / weights in place
+// without re-triangulating or re-hashing the layout.
+struct RenderMap {
+    std::vector<int> source;           // mesh vertex
+    std::vector<int> face, corner;     // face / corner it was emitted for (UV source)
+    std::vector<uint8_t> kind;         // 0 smooth vertex normal, 1 face normal, 2 averaged face group
+    std::vector<int> groupStart, groupFaces;  // kind 2: faces averaged (CSR over render vertices)
+    void clear() {
+        source.clear(), face.clear(), corner.clear(), kind.clear(), groupStart.clear(), groupFaces.clear();
+    }
+};
 // Indexed form used by the renderer: smooth vertices are shared between
 // faces (split only at UV seams / hard edges), cutting the GPU vertex count
 // and upload size several-fold on smooth meshes.
 void buildRenderMesh(const Mesh& m, const std::vector<Vec3>& positions, bool smooth, float smoothAngleDeg,
-                     int weightSlot, std::vector<RenderVertex>& vertices, std::vector<uint32_t>& indices);
+                     int weightSlot, std::vector<RenderVertex>& vertices, std::vector<uint32_t>& indices,
+                     RenderMap* map = nullptr);
+// Recomputes `vertices` (same layout) for new positions of the same topology.
+void refreshRenderMesh(const Mesh& m, const std::vector<Vec3>& positions, int weightSlot, const RenderMap& map,
+                       std::vector<RenderVertex>& vertices);
 // Expanded (non-indexed) triangle list - three vertices per triangle.
 void buildRenderData(const Mesh& m, const std::vector<Vec3>& positions, bool smooth, float smoothAngleDeg,
                      int weightSlot, std::vector<RenderVertex>& out);

@@ -61,6 +61,7 @@ bool Editor::localBounds(const Object& o, Vec3& lo, Vec3& hi) {
 }
 
 void Editor::computeGizmo() {
+    WorldCacheScope worldCache(scene_);
     if (gizmoDrag_ != GH_None) return;  // frozen while a handle is dragged
     gizmoVisible_ = false;
     if (tool_ == Tool::Hand || xf_ != Xform::None) return;
@@ -530,6 +531,14 @@ void Editor::loadConfig() {
             else if (n == "fly_accel") camSet_.flyAcceleration = b;
             else if (n == "fly_speed") flySpeed_ = clampf(v, 0.01f, 100.0f);
             else if (n == "fov") cam_.fovY = clampf(v, 10.0f, 120.0f);
+        } else if (std::sscanf(s.c_str(), "input %63s %f", name, &v) == 2) {
+            std::string n = name;
+            b = v != 0.0f;
+            if (n == "trackpad") access_.trackpad = b;
+            else if (n == "ui_scale") access_.uiScale = std::max(0, std::min(6, (int)v));
+            else if (n == "tooltips") access_.tooltips = b;
+            else if (n == "nav_pads") access_.navButtons = b;
+            else if (n == "trackpad_hint") access_.trackpadHintShown = b;
         }
     }
     std::fclose(f);
@@ -541,7 +550,7 @@ void Editor::loadConfig() {
 void Editor::saveConfig() {
     if (configPath_.empty()) return;
     if (FILE* f = std::fopen(configPath_.c_str(), "wb")) {
-        std::fprintf(f, "# Modeler3D settings (edit in the Keys and Camera tabs)\nkeymap %s\n",
+        std::fprintf(f, "# Modeler3D settings (edit them in Settings: Input, Navigate, Keys)\nkeymap %s\n",
                      keymap_ == Keymap::Unity ? "unity" : "blender");
         const CameraSettings& c = camSet_;
         std::fprintf(f,
@@ -550,6 +559,10 @@ void Editor::saveConfig() {
                      "camera fly_accel %d\ncamera fly_speed %g\ncamera fov %g\n",
                      c.orbitSensitivity, c.lookSensitivity, c.panSpeed, c.zoomSpeed, c.arrowSpeed, c.fastMultiplier,
                      c.transition, (int)c.invertX, (int)c.invertY, (int)c.flyAcceleration, flySpeed_, cam_.fovY);
+        std::fprintf(f, "input trackpad %d\ninput ui_scale %d\ninput tooltips %d\ninput nav_pads %d\n"
+                        "input trackpad_hint %d\n",
+                     (int)access_.trackpad, access_.uiScale, (int)access_.tooltips, (int)access_.navButtons,
+                     (int)access_.trackpadHintShown);
         std::fputs(keys_.serialize().c_str(), f);
         std::fclose(f);
     }

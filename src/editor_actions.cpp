@@ -108,13 +108,25 @@ void Editor::addEmitter() {
 // Object / mesh tools
 // ============================================================================
 std::vector<int> Editor::transformRoots() {
+    // "Has a selected ancestor", memoised along each parent chain: O(n) even
+    // for deep hierarchies (a 10k-long chain would otherwise cost n * depth).
+    const int n = (int)scene_.objects.size();
+    std::vector<signed char> memo(n, -1);
+    std::vector<int> chain;
     std::vector<int> out;
-    for (int i = 0; i < (int)scene_.objects.size(); ++i) {
+    for (int i = 0; i < n; ++i) {
         if (!scene_.objects[i].selected) continue;
-        bool ancestorSelected = false;
-        for (int p = scene_.parentIndex(i), guard = 0; p >= 0 && guard < 256; p = scene_.parentIndex(p), ++guard)
-            if (scene_.objects[p].selected) ancestorSelected = true;
-        if (!ancestorSelected) out.push_back(i);
+        chain.clear();
+        int c = i;
+        while (c >= 0 && memo[c] < 0 && (int)chain.size() <= n) {
+            chain.push_back(c);
+            c = scene_.parentIndex(c);
+        }
+        for (int k = (int)chain.size() - 1; k >= 0; --k) {
+            const int x = chain[k], p = scene_.parentIndex(x);
+            memo[x] = (p >= 0 && (scene_.objects[p].selected || memo[p] == 1)) ? 1 : 0;
+        }
+        if (memo[i] == 0) out.push_back(i);
     }
     return out;
 }
@@ -647,6 +659,7 @@ void Editor::loadFile() {
     }
     pushUndo();
     scene_.objects = std::move(loaded.objects);
+    scene_.invalidateNames();
     scene_.nextId = loaded.nextId;
     scene_.ambient = loaded.ambient;
     scene_.active = -1;

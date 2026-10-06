@@ -12,6 +12,7 @@
 #include <windowsx.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <psapi.h>
 
 #include <cstdint>
 
@@ -81,6 +82,20 @@ int translateKey(WPARAM vk) {
         case VK_DOWN: return KEY_DOWN;
         case VK_HOME: return KEY_HOME;
         case VK_END: return KEY_END;
+        case VK_PRIOR: return KEY_PAGEUP;
+        case VK_NEXT: return KEY_PAGEDOWN;
+        case VK_INSERT: return KEY_INSERT;
+        case VK_OEM_MINUS: case VK_SUBTRACT: return '-';
+        case VK_OEM_PLUS: case VK_ADD: return '=';
+        case VK_OEM_4: return '[';
+        case VK_OEM_6: return ']';
+        case VK_OEM_1: return ';';
+        case VK_OEM_7: return '\'';
+        case VK_OEM_COMMA: return ',';
+        case VK_OEM_PERIOD: case VK_DECIMAL: return '.';
+        case VK_OEM_2: case VK_DIVIDE: return '/';
+        case VK_OEM_5: return '\\';
+        case VK_OEM_3: return '`';
         case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT: return KEY_SHIFT;
         case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL: return KEY_CONTROL;
         case VK_MENU: case VK_LMENU: case VK_RMENU: return KEY_ALT;
@@ -159,7 +174,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_MOUSEWHEEL:
-            if (g_input) g_input->wheel += (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+        case WM_MOUSEHWHEEL:
+            if (g_input) {
+                const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+                const float notches = (float)delta / (float)WHEEL_DELTA;
+                if (msg == WM_MOUSEHWHEEL) {
+                    g_input->wheelX += notches;
+                } else {
+                    g_input->wheel += notches;
+                    // Precision touchpads report a pinch as Ctrl+wheel (the
+                    // Ctrl flag may only be in the message, not a key press).
+                    if (GET_KEYSTATE_WPARAM(wp) & MK_CONTROL) g_input->pinch = true;
+                }
+                if (delta % WHEEL_DELTA != 0) g_input->fractionalWheel = true;
+            }
             return 0;
         default:
             break;
@@ -336,7 +364,20 @@ void setTitle(const std::string& title) { SetWindowTextA(g_hwnd, title.c_str());
 
 void showError(const std::string& message) { MessageBoxA(g_hwnd, message.c_str(), "Modeler3D", MB_ICONERROR | MB_OK); }
 
+namespace {
+bool g_dialogs = true;
+}
+void setDialogsEnabled(bool on) { g_dialogs = on; }
+
+double memoryMB() {
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof pmc;
+    if (!K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof pmc)) return 0.0;
+    return (double)pmc.PrivateUsage / (1024.0 * 1024.0);
+}
+
 std::string openFileDialog(const std::string& title, bool images) {
+    if (!g_dialogs) return "";
     wchar_t file[MAX_PATH * 4] = L"";
     wchar_t wtitle[256] = L"";
     MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, wtitle, 256);

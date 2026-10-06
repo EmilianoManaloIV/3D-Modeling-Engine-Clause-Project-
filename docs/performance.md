@@ -195,15 +195,92 @@ traversal is typically several times faster than the GLSL tracer's BVH walk in a
 The tracer submits work without blocking (fences, adaptive rows per submit) and reads back about
 10 times a second, so the UI stays responsive.
 
+## Round 7: stress testing
+
+### Before / after, measured back to back
+
+The laptop's speed changes a lot with background load, so this round compares the previous version
+(built from the last commit) and this one **alternately on the same machine state**: old, new, old,
+new (frame times averaged over both pairs). Lower is better.
+
+| Scenario | Before ms | After ms | Speed-up |
+|---|---:|---:|---:|
+| 1000 objects in hierarchies, all selected | 24.4 | 12.2 | 2.0x |
+| Dense mesh (262k tris), edit-mode vertex drag every frame | 69.8 | 31.5 | 2.2x |
+| Skinned mesh, posing a bone every frame | 12.2 | 6.1 | 2.0x |
+| Gizmo drag: rotating 200 objects | 8.6 | 5.7 | 1.5x |
+| Particles, ~50k live | 5.7 | 4.1 | 1.4x |
+| Picking: 50 click-selects per frame, 1000 objects | 36.5 | 33.9 | 1.1x |
+| Default scene, dense mesh idle, skinned idle | 3.1 - 5.4 | 3.1 - 6.0 | same (noise) |
+| Save .m3d (131k quads) | 248 | 165 | 1.5x |
+
+Other one-shot operations were unchanged in code and varied by up to +-50% between the runs.
+
+What made the difference:
+
+- **Position-only GPU refresh.** When only vertex positions change (dragging, skinning), the
+  renderer keeps the mesh's GPU layout and index buffer and recomputes positions and normals in
+  place (`refreshRenderMesh`, multithreaded), instead of re-triangulating and re-hashing the whole
+  mesh. Mesh rebuild + upload during a 262k-triangle drag: 18.8 ms -> 3.8 ms.
+- **Indexed edit overlay.** Edit mode used to build a coloured copy of every edge and vertex (half a
+  million line vertices, ~15 MB) and upload it every frame of a drag. Now one position buffer is
+  shared by index buffers for all edges, selected edges, points and selected faces; a drag uploads
+  12 bytes per vertex. Edit overlay: 10.9 ms -> 0.3 ms per frame.
+- **Per-frame shader state.** Camera, lights and sampler units are set once per frame instead of
+  once per object (~90 GL calls each before), and texture binds are skipped when nothing changes.
+- **Parallel saving.** The `.m3d` writer formats vertex / face / UV lines in parallel chunks (the
+  file is byte-for-byte the same).
+
+### What the stress test found
+
+`Modeler3D --stress report.md` (full report: [stress-report.md](stress-report.md)) runs seven groups:
+mesh sizes from 4k to 4.1 million triangles, 1000 to 50,000 objects, parent chains 1000 to 50,000
+deep, 6000 random modeling operations on ten kinds of mesh, 3000 frames of random mouse / keyboard /
+trackpad input plus random commands, every window size from 320x240 to 3840x2160 at UI sizes 1-6,
+and extreme values. Every result is checked automatically. It found:
+
+| Problem | Effect | Fix |
+|---|---|---|
+| Unique object names were O(n^3): every add probed "Cube.001", "Cube.002"... with a full scan each | Creating / duplicating 20,000 objects never finished | Name set + next free suffix per stem: O(1) per add |
+| One VAO + VBO + EBO per mesh; the Intel driver commits ~100 KB per buffer | 50,000 small objects took 5 GB and paged (7.7 GB laptop) | Small meshes share pooled buffers (ranges, base-vertex draws): 360 MB |
+| Index buffers of deleted objects were never freed | GPU memory leak | Freed with the rest |
+| World matrices / cycle checks stopped at 256 parents | Wrong positions and possible parenting cycles in deep hierarchies | Bounded by the object count; per-frame world cache (O(n)) |
+| Hierarchy list built recursively; descendants and transform roots were O(n x depth) | Stack overflow risk and 1-second frames at 10,000+ deep | Explicit stack; O(n) passes |
+| BSP boolean: a polygon could be sent down the tree forever | A boolean ran out of memory (crash) | Polygons on a node's own plane always stay at that node |
+| Edge loop / ring, bevel and loop cut built a hash map of every edge | 1-8 s per tool on 1-4M-triangle meshes | Vertex-to-faces index (two flat arrays) and local work: 20-40x faster |
+| Extrude / inset of faces that only touch at a corner shared one copy of that vertex | Non-manifold mesh | Corners grouped in "fans"; one copy per fan |
+| Bevel at vertices with two edges, two holes meeting at a vertex, profiles between identical points | Repeated corners, open holes, double faces | Faces cleaned, holes walked by rotating around each vertex |
+| Connect / subdivide could create a chord that already existed | Edges used by 3-4 faces | Such chords are skipped |
+| Typing `1/0` or `0/0` into a number field | NaN in a transform | Non-finite results are rejected |
+
+Each fuzzer failure was saved (`M3D_FUZZ_TRACE=1`) and is now a regression test that replays it
+(`tests/data/fuzz`). The final run: **0 failures**; 3 of 6000 random operations (triangulating two faces
+that touch at two separate corners, in meshes made by long random sequences) leave an edge shared by
+four triangles - reported in the stress report, not fixed.
+
+Limits on the test laptop (Iris Xe, very variable load):
+
+- **Mesh size:** a 4.1-million-triangle mesh still draws at 30+ fps when idle; dragging all vertices
+  stays above 10 fps up to 0.26 - 1 million triangles depending on load.
+- **Object count:** about 1000 - 5000 objects at 30+ fps.
+- **Hierarchy depth:** 50,000 levels are correct, at about 170 ms per frame.
+- **Layout:** every window size from 320x240 to 4K works at every UI size.
+
 ## Known remaining costs
 
-- **Picking BVH rebuilds** after every edit of a dense mesh (80 ms at 262k triangles), on the first
-  pick after the edit. A refit instead of a rebuild would cut that.
+- **Picking BVH rebuilds** after every edit of a dense mesh (80 ms at 262k triangles, ~0.8 s at 4M),
+  on the first pick after the edit. A refit instead of a rebuild would cut that.
+- **Many objects:** each object is still one draw call with its own uniforms (~3.5 us of CPU each);
+  instancing identical meshes would raise the 1000-5000 object limit.
+- **Huge n-gons:** ear clipping is O(n^2): a 20,000-corner concave polygon takes 0.7-2.6 s to
+  triangulate.
 - **Texture uploads** are synchronous: the first frame after loading a large texture set waits for
   mipmap generation.
 - **Live render restarts** rebuild the BVH and re-upload the scene on every change (e.g. each frame
   of a drag). That takes a few ms for normal scenes and about 70 ms at 262k triangles.
-- **Undo snapshots** copy the whole scene (11 ms with a 131k-quad mesh). A command/delta-based undo
-  would remove this.
+- **Undo snapshots** now share every mesh that did not change since the previous snapshot (an edit
+  of a small object next to a 4M-triangle mesh takes ~1 ms instead of copying it), but the first
+  snapshot after editing a mesh still copies that mesh (0.2-1.3 s at 4M triangles). A delta-based
+  undo would remove this.
 - **Particles and dense meshes are GPU-bound** on the integrated GPU. MSAA 4x and the 1728x1020
   viewport dominate.

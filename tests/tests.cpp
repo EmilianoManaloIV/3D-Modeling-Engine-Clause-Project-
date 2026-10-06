@@ -664,9 +664,11 @@ static void testTransformApi() {
 
 #include "tests_round5.inc"
 #include "tests_round6.inc"
+#include "tests_round7.inc"
 
 int main() {
     jobs::init();
+    if (const char* r = std::getenv("M3D_REPLAY")) return replayFuzz(r);
     testMath();
     testPrimitives();
     testCatmullClark();
@@ -694,6 +696,13 @@ int main() {
     testLightsCameraMaterials();
     testSceneFilesV3();
     testHardwareRayTracingMatchesCpu();
+    testAddVertexTools();
+    testBevel();
+    testBridgeFillMergePush();
+    testRound7Core();
+    testParallelSave();
+    testFuzzBooleanRegression();
+    testFuzzRegressions();
     jobs::shutdown();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

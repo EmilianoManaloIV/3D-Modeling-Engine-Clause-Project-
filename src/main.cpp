@@ -8,6 +8,8 @@
 // Testing flags: --demo <0-6>   build a sample scene (5 = booleans, 6 = materials)
 //                --screenshot <file.png>   render a few frames, save, exit
 //                --benchmark <report.md>   run the performance scenarios, write a report, exit
+//                --stress <report.md>      push every limit (mesh size, object count, hierarchy depth,
+//                                          random tools / input / commands), write a report, exit
 //                --frames <n>   frames to run before --screenshot (default 6)
 //                --threads <n>  CPU worker threads (default: all hardware threads)
 //                --render <out.png> [--device cpu|gpu|rtx] [--samples n] [--resolution pct] [--rt-warp]
@@ -44,6 +46,8 @@ int main(int argc, char** argv) {
         else if (a == "--resolution" && i + 1 < argc) options.renderPercent = std::atoi(argv[++i]);
         else if (a == "--help-overlay") options.showHelp = true;
         else if (a == "--benchmark" && i + 1 < argc) options.benchmarkReport = argv[++i];
+        else if (a == "--stress" && i + 1 < argc) options.stressReport = argv[++i];
+        else if (a == "--stress-only" && i + 1 < argc) options.stressOnly = argv[++i];
         else if (!a.empty() && a[0] != '-') options.openPath = a;
     }
 
@@ -78,7 +82,7 @@ int main(int argc, char** argv) {
     Input input;
     auto last = std::chrono::steady_clock::now();
     int frameCount = 0;
-    const bool benchmark = !options.benchmarkReport.empty();
+    const bool benchmark = !options.benchmarkReport.empty() || !options.stressReport.empty();
     if (benchmark) platform::setVSync(false);  // measure real frame cost, not the display rate
     while (!editor.shouldExit()) {
         prof::beginFrame();

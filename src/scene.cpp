@@ -3,6 +3,7 @@
 #include <unordered_set>
 
 #include "skin.h"
+#include "jobs.h"
 
 #include <algorithm>
 #include <cctype>
@@ -116,24 +117,52 @@ int Scene::addObject(Object o) {
     return (int)objects.size() - 1;
 }
 
+void Scene::syncNames() const {
+    const bool appendedOnly = nameValid_ && objects.size() >= nameCount_ &&
+                              (nameCount_ == 0 || objects[nameCount_ - 1].id == nameLastId_);
+    if (appendedOnly) {
+        for (size_t i = nameCount_; i < objects.size(); ++i) nameSet_.insert(objects[i].name);
+    } else {
+        nameSet_.clear();
+        nameSuffix_.clear();
+        nameSet_.reserve(objects.size() * 2);
+        for (const Object& o : objects) nameSet_.insert(o.name);
+    }
+    nameCount_ = objects.size();
+    nameLastId_ = objects.empty() ? 0 : objects.back().id;
+    nameValid_ = true;
+}
+
 std::string Scene::uniqueName(const std::string& baseIn, int ignore) const {
     std::string base = baseIn.empty() ? std::string("Object") : baseIn;
+    syncNames();
+    const std::string* own = (ignore >= 0 && ignore < (int)objects.size()) ? &objects[ignore].name : nullptr;
     auto exists = [&](const std::string& n) {
-        for (int i = 0; i < (int)objects.size(); ++i)
-            if (i != ignore && objects[i].name == n) return true;
-        return false;
+        if (own && n == *own) return false;  // renaming to its own name
+        if (!nameSet_.count(n)) return false;
+        // The set may hold names that are no longer used (renamed / deleted
+        // objects): those only make us skip a free name, never duplicate one.
+        return true;
     };
-    if (!exists(base)) return base;
+    auto take = [&](const std::string& n) {
+        nameSet_.insert(n);
+        return n;
+    };
+    if (!exists(base)) return take(base);
     // Strip an existing ".NNN" suffix so duplicates of "Cube.001" become "Cube.002".
     std::string stem = base;
     size_t dot = stem.rfind('.');
     if (dot != std::string::npos && dot + 4 == stem.size() && std::isdigit((unsigned char)stem[dot + 1]) &&
         std::isdigit((unsigned char)stem[dot + 2]) && std::isdigit((unsigned char)stem[dot + 3]))
         stem = stem.substr(0, dot);
-    for (int i = 1;; ++i) {
+    int& next = nameSuffix_[stem];
+    for (int i = std::max(1, next);; ++i) {
         char buf[16];
         std::snprintf(buf, sizeof buf, ".%03d", i);
-        if (!exists(stem + buf)) return stem + buf;
+        if (!exists(stem + buf)) {
+            next = i + 1;
+            return take(stem + buf);
+        }
     }
 }
 
@@ -179,10 +208,13 @@ int Scene::indexOf(uint32_t id) const {
 int Scene::parentIndex(int i) const { return indexOf(objects[i].parent); }
 
 Mat4 Scene::world(int i) const {
+    if (worldCacheDepth_ > 0 && i >= 0 && i < (int)worldCache_.size() && worldCache_.size() == objects.size())
+        return worldCache_[i];
     Mat4 m = objects[i].matrix();
-    // Walk up the chain (bounded, in case a file contains a cycle).
+    // Walk up the chain (bounded by the object count, in case of a cycle).
     int p = parentIndex(i);
-    for (int guard = 0; p >= 0 && guard < 256; ++guard) {
+    const int n = (int)objects.size();
+    for (int guard = 0; p >= 0 && guard < n; ++guard) {
         m = objects[p].matrix() * m;
         p = parentIndex(p);
     }
@@ -220,7 +252,8 @@ Mat4 Scene::parentWorld(int i) const {
 
 bool Scene::isAncestor(int ancestor, int i) const {
     int p = parentIndex(i);
-    for (int guard = 0; p >= 0 && guard < 256; ++guard) {
+    const int n = (int)objects.size();
+    for (int guard = 0; p >= 0 && guard < n; ++guard) {
         if (p == ancestor) return true;
         p = parentIndex(p);
     }
@@ -229,7 +262,8 @@ bool Scene::isAncestor(int ancestor, int i) const {
 
 int Scene::depth(int i) const {
     int d = 0;
-    for (int p = parentIndex(i); p >= 0 && d < 64; p = parentIndex(p)) ++d;
+    const int n = (int)objects.size();
+    for (int p = parentIndex(i); p >= 0 && d < n; p = parentIndex(p)) ++d;
     return d;
 }
 
@@ -246,9 +280,28 @@ bool Scene::setParent(int child, int parent, bool keepWorld) {
 }
 
 std::vector<int> Scene::descendants(int i) const {
-    std::vector<int> out;
-    for (int j = 0; j < (int)objects.size(); ++j)
-        if (isAncestor(i, j)) out.push_back(j);
+    // One pass to build the child lists, then a walk down from i: O(n),
+    // where testing isAncestor for every object was O(n * depth).
+    const int n = (int)objects.size();
+    std::vector<std::vector<int>> children(n);
+    for (int j = 0; j < n; ++j) {
+        int p = parentIndex(j);
+        if (p >= 0) children[p].push_back(j);
+    }
+    std::vector<int> out, stack = {i};
+    std::vector<char> seen(n, 0);
+    seen[i] = 1;
+    while (!stack.empty()) {
+        int c = stack.back();
+        stack.pop_back();
+        for (int k : children[c])
+            if (!seen[k]) {
+                seen[k] = 1;
+                out.push_back(k);
+                stack.push_back(k);
+            }
+    }
+    std::sort(out.begin(), out.end());
     return out;
 }
 
@@ -346,6 +399,33 @@ struct TextOut {
         return ok;
     }
 };
+
+// Formats n independent lines in parallel chunks (the bulk of a dense mesh:
+// shortest round-trip float formatting is the cost), then concatenates them
+// in order, so the file is byte-for-byte the same as a serial write.
+template <class Emit>
+void parallelLines(TextOut& out, size_t n, Emit&& emit) {
+    const size_t chunk = 16384;
+    if (n < 2 * chunk) {
+        for (size_t i = 0; i < n; ++i) emit(out, i);
+        return;
+    }
+    const size_t chunks = (n + chunk - 1) / chunk;
+    std::vector<std::string> parts(chunks);
+    jobs::parallelFor(0, (int)chunks, 1, [&](int cb, int ce) {
+        for (int c = cb; c < ce; ++c) {
+            TextOut t;
+            t.buf.reserve(chunk * 32);
+            const size_t end = std::min(n, (size_t)(c + 1) * chunk);
+            for (size_t i = (size_t)c * chunk; i < end; ++i) emit(t, i);
+            parts[c] = std::move(t.buf);
+        }
+    });
+    size_t total = out.buf.size();
+    for (const auto& p : parts) total += p.size();
+    out.buf.reserve(total);
+    for (const auto& p : parts) out.buf += p;
+}
 
 bool readFile(const std::string& path, std::string& out) {
     FILE* f = std::fopen(path.c_str(), "rb");
@@ -584,25 +664,26 @@ bool saveScene(const Scene& scene, const std::string& path, std::string& err) {
                 out.ch('\n');
             }
         }
-        for (const Vec3& v : o.mesh.verts) {
-            out.ch('v');
-            out.nums({v.x, v.y, v.z});
-            out.ch('\n');
-        }
-        for (const auto& face : o.mesh.faces) {
-            out.ch('f');
-            for (int i : face) {
-                out.ch(' ');
-                out.num(i);
+        parallelLines(out, o.mesh.verts.size(), [&](TextOut& t, size_t i) {
+            const Vec3& v = o.mesh.verts[i];
+            t.ch('v');
+            t.nums({v.x, v.y, v.z});
+            t.ch('\n');
+        });
+        parallelLines(out, o.mesh.faces.size(), [&](TextOut& t, size_t i) {
+            t.ch('f');
+            for (int k : o.mesh.faces[i]) {
+                t.ch(' ');
+                t.num(k);
             }
-            out.ch('\n');
-        }
+            t.ch('\n');
+        });
         if (o.mesh.hasUVs())
-            for (const auto& uvs : o.mesh.uvs) {
-                out.ch('t');
-                for (const Vec2& t : uvs) out.nums({t.x, t.y});
-                out.ch('\n');
-            }
+            parallelLines(out, o.mesh.uvs.size(), [&](TextOut& t, size_t i) {
+                t.ch('t');
+                for (const Vec2& uv : o.mesh.uvs[i]) t.nums({uv.x, uv.y});
+                t.ch('\n');
+            });
         if (o.mesh.hasWeights())
             for (size_t v = 0; v < o.mesh.weights.size(); ++v) {
                 const BoneWeights& w = o.mesh.weights[v];

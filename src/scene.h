@@ -13,6 +13,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 enum class ObjectKind { Mesh = 0, Light, Empty, Bone, Emitter, Camera };
@@ -164,6 +165,18 @@ public:
     int add(Mesh mesh, const std::string& baseName, Vec3 color);
     int addObject(Object o);  // assigns id + unique name
     std::string uniqueName(const std::string& base, int ignoreIndex = -1) const;
+    // Name cache behind uniqueName: a set of the names in use plus the next
+    // free ".NNN" suffix per stem, so adding / duplicating n objects is O(n)
+    // overall (it was O(n^3): every add probed suffix after suffix with a full
+    // scan each). Appended objects are picked up incrementally; a shrink or a
+    // replaced object list (undo, load) rebuilds it.
+    void invalidateNames() const { nameValid_ = false; }
+    mutable std::unordered_set<std::string> nameSet_;
+    mutable std::unordered_map<std::string, int> nameSuffix_;
+    mutable size_t nameCount_ = 0;
+    mutable uint32_t nameLastId_ = 0;
+    mutable bool nameValid_ = false;
+    void syncNames() const;
     Object* activeObject() { return (active >= 0 && active < (int)objects.size()) ? &objects[active] : nullptr; }
     int selectedCount() const;
     size_t triangleCount() const;
@@ -173,6 +186,18 @@ public:
     int parentIndex(int i) const;
     Mat4 world(int i) const;
     void computeWorlds(std::vector<Mat4>& out) const;  // every object's world matrix, O(n)
+    // Inside a read-only region (drawing, picking), world(i) comes from one
+    // computeWorlds() pass instead of walking up the parents for every call:
+    // O(n) instead of O(n * depth) per frame for deep hierarchies. Nestable.
+    // Transforms must not change while a cache is active.
+    void beginWorldCache() const {
+        if (worldCacheDepth_++ == 0) computeWorlds(worldCache_);
+    }
+    void endWorldCache() const {
+        if (worldCacheDepth_ > 0) --worldCacheDepth_;
+    }
+    mutable std::vector<Mat4> worldCache_;
+    mutable int worldCacheDepth_ = 0;
     Mat4 parentWorld(int i) const;
     bool isAncestor(int ancestor, int i) const;
     int depth(int i) const;
@@ -203,3 +228,12 @@ bool importOBJ(Scene& scene, const std::string& path, std::string& err, int* fir
 // Returns false if impossible (dropping onto itself or into its own subtree).
 enum class HierarchyDrop { None = 0, Before = 1, Onto = 2, After = 3, Root = 4 };
 bool moveInHierarchy(Scene& scene, const std::vector<uint32_t>& ids, uint32_t targetId, HierarchyDrop zone);
+
+// RAII scope for Scene::beginWorldCache / endWorldCache.
+struct WorldCacheScope {
+    const Scene& scene;
+    explicit WorldCacheScope(const Scene& s) : scene(s) { scene.beginWorldCache(); }
+    ~WorldCacheScope() { scene.endWorldCache(); }
+    WorldCacheScope(const WorldCacheScope&) = delete;
+    WorldCacheScope& operator=(const WorldCacheScope&) = delete;
+};
